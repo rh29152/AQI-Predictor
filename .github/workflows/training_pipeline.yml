@@ -1,0 +1,76 @@
+name: Training Pipeline (Daily)
+
+# ── What this workflow does ────────────────────────────────────────────────────
+# Runs daily at 02:00 UTC and executes train.py which:
+#   1. Loads feature rows with target labels from MongoDB.
+#   2. Trains LR / RF / GB / XGB for 24h, 48h, 72h forecast horizons.
+#   3. Selects the best model per horizon (lowest RMSE).
+#   4. Saves the .pkl locally  (models/ folder inside the runner).
+#   5. Uploads model.pkl + metadata.json to Hugging Face Hub:
+#          <HF_REPO_ID>/models/<target>/<timestamp>/model.pkl
+#          <HF_REPO_ID>/models/<target>/<timestamp>/metadata.json
+#   6. Mirrors full metadata to MongoDB model_registry collection.
+#
+# No GCP / billing account required.
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: "0 2 * * *"   # daily at 02:00 UTC
+  workflow_dispatch:        # allow manual trigger from GitHub UI
+
+jobs:
+  train:
+    name: "Train → HF Hub Upload → MongoDB Metadata"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    # ── Secrets injected as environment variables ──────────────────────────────
+    env:
+      # Data pipeline (MongoDB + OpenWeather)
+      OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+      MONGODB_URI:         ${{ secrets.MONGODB_URI }}
+      DB_NAME:             ${{ secrets.DB_NAME }}
+      # Hugging Face Hub (model registry)
+      HF_TOKEN:            ${{ secrets.HF_TOKEN }}
+      HF_REPO_ID:          ${{ secrets.HF_REPO_ID }}
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ─────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ── 3. Install dependencies ───────────────────────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 4. Run training pipeline ──────────────────────────────────────────────
+      # train.py internally calls model_registry.save_model() which:
+      #   - saves .pkl locally
+      #   - uploads to HF Hub   (hf_model_registry.upload_model_to_hf)
+      #   - writes metadata to MongoDB (database.save_model_metadata)
+      - name: Run training pipeline
+        run: python src/train.py
+
+      # ── 5. Upload local .pkl files as GitHub Actions artifact (backup) ────────
+      # These are available for 30 days as a secondary backup to HF Hub.
+      - name: Upload trained model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-models-${{ github.run_id }}
+          path: models/
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── 6. Log completion ─────────────────────────────────────────────────────
+      - name: Log completion
+        run: |
+          echo "Training pipeline completed at $(date -u)"
+          echo "Models uploaded to HF Hub repo: $HF_REPO_ID"

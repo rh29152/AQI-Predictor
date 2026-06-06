@@ -1,0 +1,48 @@
+name: Feature Pipeline (Hourly)
+
+# ── What this workflow does ────────────────────────────────────────────────────
+# Runs every hour and executes ONE incremental step only:
+#   1. Fetch the latest Karachi AQI + weather from OpenWeather API.
+#   2. Store the raw record in MongoDB (raw_data collection) — upsert.
+#   3. Compute features for that single new record using the last ~73 raw rows
+#      as lag context.
+#   4. Store the new feature row in MongoDB (features collection) — upsert.
+#
+# This workflow does NOT rebuild features for the whole 90-day history.
+# The one-time backfill (backfill.py) must be run manually before this starts.
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # every hour at :00
+  workflow_dispatch:        # allow manual trigger from GitHub UI
+
+jobs:
+  hourly-feature-pipeline:
+    name: "Fetch → Store Raw → Engineer 1 Feature Row → Store"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run incremental hourly pipeline
+        run: python src/hourly_pipeline.py
+
+      - name: Log completion
+        run: echo "Hourly pipeline complete at $(date -u)"
