@@ -1,19 +1,11 @@
 """
-hourly_pipeline.py — Incremental hourly data + feature pipeline with catch-up.
+hourly_pipeline.py — Incremental hourly ingestion and feature engineering.
 
-Default behaviour (catch-up enabled):
-  1. Compare latest feature timestamp with current UTC hour.
-  2. If hours are missing and gap <= MAX_CATCHUP_HOURS:
-     - fetch historical pollution + weather for missing hours
-     - upsert raw rows (idempotent)
-     - build feature rows chronologically (lag-safe)
-  3. Fetch current OpenWeather snapshot and upsert raw row.
-  4. Build features for the current snapshot.
+Orchestrates the live data path: optional gap fill (up to MAX_CATCHUP_HOURS),
+current OpenWeather fetch, and single-row incremental feature upsert. All writes
+use MongoDB upserts keyed by datetime for idempotent re-runs.
 
-Run:
-    python src/hourly_pipeline.py                  # catch-up up to 48 h, then current
-    python src/hourly_pipeline.py --no-catchup       # current snapshot only (legacy)
-    python src/hourly_pipeline.py --catchup-hours 24
+CLI flags: --no-catchup (snapshot only), --catchup-hours N (gap limit).
 """
 
 from __future__ import annotations
@@ -224,16 +216,7 @@ def run_hourly_pipeline(
     enable_catchup: bool = True,
     catchup_hours: int = MAX_CATCHUP_HOURS,
 ) -> None:
-    """
-    Full hourly pipeline with optional catch-up, then current snapshot.
-
-    Parameters
-    ----------
-    enable_catchup : bool
-        If True, attempt to fill missing hours before the current fetch.
-    catchup_hours : int
-        Maximum number of missing hours to fill automatically.
-    """
+    """Hourly pipeline: optional gap fill, live raw ingest, incremental features."""
     ensure_indexes()
 
     if enable_catchup:

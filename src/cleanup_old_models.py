@@ -1,28 +1,9 @@
 """
-cleanup_old_models.py — Safe model versioning cleanup utility.
+cleanup_old_models.py — Model registry housekeeping utility.
 
-What this script does
----------------------
-1. Marks old MongoDB model_registry records as active=False for the
-   specified target names (default: old target_aqi_* targets).
-2. Optionally deletes matching local .pkl files from the models/ folder.
-3. Does NOT touch Hugging Face Hub files (old HF files are harmless
-   because prediction code always resolves models via MongoDB metadata,
-   never by scanning HF directly).
-
-Usage
------
-# Deactivate old target_aqi_* records in MongoDB (default behaviour)
-python src/cleanup_old_models.py
-
-# Deactivate specific targets
-python src/cleanup_old_models.py --targets target_aqi_24h target_aqi_48h target_aqi_72h
-
-# Also delete matching local .pkl files
-python src/cleanup_old_models.py --delete-local-pkl
-
-# Dry-run — show what would happen without making changes
-python src/cleanup_old_models.py --dry-run
+Deactivates legacy MongoDB model_registry rows for named targets and optionally
+removes matching local .pkl files. Hugging Face artefacts are left intact;
+inference always resolves models through MongoDB metadata, not Hub enumeration.
 """
 
 from __future__ import annotations

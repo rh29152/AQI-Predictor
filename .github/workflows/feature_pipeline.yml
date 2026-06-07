@@ -1,22 +1,13 @@
 name: Feature Pipeline (Hourly)
 
-# ── What this workflow does ────────────────────────────────────────────────────
-# Runs every hour and executes ONE incremental step with optional catch-up:
-#   0. (default) Fill up to 48 missing hourly slots since last feature row.
-#   1. Fetch the latest Karachi AQI + weather from OpenWeather API.
-#   2. Store the raw record in MongoDB (raw_data collection) — upsert.
-#   3. Compute features for that single new record using the last ~73 raw rows
-#      as lag context.
-#   4. Store the new feature row in MongoDB (features collection) — upsert.
-#
-# This workflow does NOT rebuild features for the whole 90-day history.
-# The one-time backfill (backfill.py) must be run manually before this starts.
-# ──────────────────────────────────────────────────────────────────────────────
+# Hourly incremental ingestion with optional catch-up (default 48 h gap fill):
+# OpenWeather fetch → raw_data upsert → single-row feature engineering → features upsert.
+# Full historical features require a one-time backfill.py run beforehand.
 
 on:
   schedule:
     - cron: "0 * * * *"   # every hour at :00
-  workflow_dispatch:        # allow manual trigger from GitHub UI
+  workflow_dispatch:        # GitHub UI manual trigger
 
 jobs:
   hourly-feature-pipeline:

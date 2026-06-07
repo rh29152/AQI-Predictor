@@ -1,42 +1,10 @@
 """
-model_registry.py — Unified model save / load interface (HF Hub backend).
+model_registry.py — Unified model persistence and resolution.
 
-Save workflow
--------------
-1. Serialise the best model to models/<filename>.pkl (local cache).
-2. Upload model.pkl to HF Hub at:
-       models/<target>/<timestamp>/model.pkl
-3. Upload metadata.json to HF Hub at:
-       models/<target>/<timestamp>/metadata.json
-4. Persist a metadata document to MongoDB model_registry:
-       {
-         registry        : "huggingface",
-         hf_repo_id      : str,
-         hf_model_path   : str,   # path inside HF repo
-         hf_metadata_path: str,
-         model_name      : str,
-         target          : str,
-         metrics         : {train_mae, train_rmse, train_r2,
-                            test_mae, test_rmse, test_r2,
-                            overfit_gap, overfit_ratio, is_overfitting,
-                            mae, rmse, r2},
-         feature_columns : [str, ...],
-         trained_at      : datetime,
-         local_model_path: str,   # local cache (may be absent on new runners)
-       }
-
-Load workflow
--------------
-1. Query MongoDB for the latest metadata document matching the target.
-2. Fast path  — if local_model_path still exists on disk, load directly.
-3. Slow path  — download model.pkl from HF Hub using hf_model_path stored
-               in metadata, cache to models/ folder, then load.
-
-Graceful degradation
---------------------
-When HF_ENABLED is False (token or repo_id missing), HF upload is skipped.
-The model is saved locally only; metadata is stored in MongoDB with
-hf_model_path=None.  Loading still works from the local cache.
+Serialises estimators locally, optionally mirrors artefacts to Hugging Face Hub,
+and records authoritative metadata in MongoDB. Load resolves the active model
+for an exact target name: local cache when present, otherwise Hub download.
+When Hub credentials are absent, local-only mode still registers metadata.
 """
 
 from __future__ import annotations
@@ -68,40 +36,21 @@ def save_model(
     extra_meta: dict[str, Any] | None = None,
 ) -> Path:
     """
-    Persist a trained model locally and register it on HF Hub.
+    Serialise a fitted estimator locally and register it in Hub + MongoDB.
 
-    Parameters
-    ----------
-    model : sklearn / XGBoost estimator
-        A fitted model (or Pipeline) exposing fit() / predict().
-    model_name : str
-        Algorithm class name, e.g. 'RandomForestRegressor'.
-    target : str
-        Exact target column name, e.g. 'target_pm2_5_24h'.
-        All previous MongoDB records for this target are marked active=False
-        before the new record is inserted as active=True.
-    metrics : dict
-        Train/test metrics and overfitting diagnostics, e.g.
-        train_mae, train_rmse, train_r2, test_mae, test_rmse, test_r2,
-        overfit_gap, overfit_ratio, is_overfitting.
-    feature_columns : list[str]
-        Ordered feature column names the model was trained on.
-
-    Returns
-    -------
-    Path
-        Absolute path to the locally saved .pkl file.
+    Prior active records for the same target are deactivated; the new row
+    becomes the sole active model for that target.
     """
     trained_at = datetime.now(timezone.utc)
     timestamp  = trained_at.strftime("%Y%m%d_%H%M%S")
     filename   = f"best_model_{target}_{timestamp}.pkl"
     local_path = MODELS_DIR / filename
 
-    # ── Step 1: Save locally ───────────────────────────────────────────────────
+    # Local serialisation
     joblib.dump(model, local_path)
     logger.info("Model saved locally: %s", local_path)
 
-    # ── Step 2 & 3: Upload to HF Hub (model.pkl + metadata.json) ──────────────
+    # Remote upload (model.pkl + metadata.json) when Hub is configured
     hf_model_path, hf_metadata_path = upload_model_to_hf(
         local_model_path=local_path,
         target=target,
@@ -111,7 +60,7 @@ def save_model(
         model_name=model_name,
     )
 
-    # ── Step 4: Write metadata mirror to MongoDB ───────────────────────────────
+    # MongoDB metadata mirror (active=True for this target)
     from src.config import HF_REPO_ID  # noqa: PLC0415  (avoid circular at module level)
 
     metadata: dict[str, Any] = {
@@ -144,29 +93,8 @@ def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
     """
     Load the active model for an exact target name.
 
-    Resolution order
-    ----------------
-    1. Query MongoDB for the active=True document with the exact target name,
-       sorted by trained_at descending.  Falls back to any matching document
-       if no active record exists (legacy compatibility).
-    2. Fast path  — local_model_path still on disk → load directly.
-    3. Slow path  — download model.pkl from HF Hub using the path stored in
-                    metadata, cache locally, then load.
-
-    Prediction code MUST pass the exact target name (e.g. 'target_pm2_5_24h').
-    This prevents accidentally loading old target_aqi_* models.
-
-    Parameters
-    ----------
-    target : str or None
-        Exact target column name, e.g. 'target_pm2_5_24h'.
-        None → most recently trained active model across all targets.
-
-    Returns
-    -------
-    (model, metadata) tuple
-        model    — fitted sklearn / XGBoost estimator
-        metadata — full MongoDB document dict
+    Resolution: MongoDB active record → local .pkl if present → Hub download.
+    Legacy records without active=True fall back to the newest matching row.
     """
     meta = get_latest_model_metadata(target=target)
     if meta is None:
@@ -175,7 +103,7 @@ def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
             "Run train.py first."
         )
 
-    # ── Verification log ────────────────────────────────────────────────────────
+    # Audit log before deserialisation
     trained_at_str = (
         meta["trained_at"].isoformat()
         if hasattr(meta.get("trained_at"), "isoformat")
@@ -192,13 +120,13 @@ def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
 
     local_path = Path(meta.get("local_model_path", ""))
 
-    # ── Fast path ──────────────────────────────────────────────────────────────
+    # Local cache hit
     if local_path.exists():
         model = joblib.load(local_path)
         logger.info("  -> Loaded from local cache: %s", local_path.name)
         return model, meta
 
-    # ── Slow path: download from HF Hub ────────────────────────────────────────
+    # Hub fetch when local artefact is missing (typical on fresh CI runners)
     hf_model_path = meta.get("hf_model_path")
     hf_repo_id    = meta.get("hf_repo_id")
 

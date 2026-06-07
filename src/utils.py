@@ -1,5 +1,5 @@
 """
-utils.py — Shared utility functions.
+utils.py — Shared logging, datetime, and AQI presentation helpers.
 """
 
 from __future__ import annotations
@@ -46,10 +46,8 @@ def aqi_color(aqi: int | float) -> str:
 
 def openweather_aqi_label(aqi: int | float) -> str:
     """
-    Map OpenWeather AQI integer (1-5) to a human-readable label.
-
-    Kept for displaying raw_data 'aqi_category' field in the EDA notebook
-    and historical trend charts.  Do NOT use for forecast output.
+    Human-readable label for OpenWeather's 1–5 AQI scale (raw_data / EDA).
+    Forecast output uses the EPA 0–500 scale via aqi_utils instead.
     """
     mapping = {1: "Good", 2: "Fair", 3: "Moderate", 4: "Poor", 5: "Very Poor"}
     return mapping.get(int(round(aqi)), "Unknown")

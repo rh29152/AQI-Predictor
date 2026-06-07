@@ -1,325 +1,217 @@
-# 🌫️ Karachi AQI Predictor
+# Karachi AQI Predictor
 
-A **fully automated, cloud-ready Air Quality Index (AQI) forecasting system** for Karachi, Pakistan.
+An automated air-quality forecasting system for Karachi, Pakistan. The pipeline ingests hourly pollution and weather data, engineers temporal features in MongoDB Atlas, trains twelve horizon-specific regressors, and serves EPA-style AQI forecasts through a Streamlit dashboard.
 
-This project follows a **pollutant-first AQI forecasting approach**. Instead of predicting
-OpenWeather's 1–5 AQI category directly, the system predicts future **pollutant concentrations**
-(PM2.5, PM10, O3, NO2) at 24 h, 48 h, and 72 h horizons. Each predicted pollutant is converted
-to an AQI sub-index using EPA breakpoint interpolation, and the **final AQI is selected as the
-maximum sub-index**, representing the dominant pollutant.
+The design follows a **pollutant-first** approach: models predict future concentrations of PM2.5, PM10, O₃, and NO₂ at 24 h, 48 h, and 72 h lead times. Each concentration maps to an EPA sub-index via breakpoint interpolation; the reported AQI is the maximum sub-index (dominant pollutant), not OpenWeather’s 1–5 category scale.
 
-> ⚠️ **Educational approximation notice**: Official AQI calculations depend on pollutant-specific
-> averaging windows (24-hour PM averages, 8-hour ozone averages). This project uses hourly
-> forecasted concentrations as approximations of these windows. Results are for educational
-> forecasting purposes and are not regulatory-grade.
+> **Scope note:** Regulatory AQI relies on pollutant-specific averaging windows (e.g. 24 h PM, 8 h O₃). This system uses hourly forecast values as approximations for educational forecasting and is not intended as regulatory-grade AQI.
 
 ---
 
 ## Architecture
 
 ```
-OpenWeather API (Air Pollution + Weather)
+OpenWeather API (air pollution + weather)
         │
-        ▼  (every hour via GitHub Actions)
-  Feature Pipeline
-  ├── fetch_openweather.py    — fetch & store raw data
-  └── feature_engineering.py — lag/rolling/time features for PM2.5, PM10, O3, NO2
-        │
-        ▼
-  MongoDB Atlas (Feature Store)
-  ├── raw_data collection    — raw API records
-  ├── features collection    — engineered ML features + 12 pollutant target columns
-  └── model_registry         — model metadata mirror (HF Hub paths, metrics)
-        │
-        ▼  (every day via GitHub Actions)
-  Training Pipeline (train.py)
-  ├── 12 targets: 4 pollutants × 3 horizons (24h/48h/72h)
-  ├── 4 algorithms per target: Ridge · RandomForest · GradientBoosting · XGBoost
-  └── Overfitting detection (overfit_ratio AND r2_gap thresholds)
+        ▼  hourly — GitHub Actions
+  Feature pipeline (hourly_pipeline.py)
+  ├── fetch_openweather.py      — live and historical raw ingestion
+  ├── feature_engineering.py    — lag, rolling, calendar features
+  └── optional catch-up          — fills gaps up to 48 h since last feature row
         │
         ▼
-  Hugging Face Hub — model registry
-  └── models/target_pm2_5_24h/<timestamp>/model.pkl  (× 12)
+  MongoDB Atlas
+  ├── raw_data         — hourly API records (upsert by datetime + city)
+  ├── features         — engineered rows; batch rows include 12 target columns
+  ├── model_registry   — active model metadata (metrics, HF paths, feature schema)
+  └── predictions      — forecast documents from predict.py
+        │
+        ▼  daily — GitHub Actions
+  Training pipeline (train.py)
+  ├── 12 targets       — 4 pollutants × 24/48/72 h horizons
+  ├── 4 algorithms     — Ridge, Random Forest, Gradient Boosting, XGBoost
+  └── selection        — lowest test RMSE among non-overfitting candidates
         │
         ▼
-  Prediction Pipeline (predict.py)
-  ├── Load each model → predict pollutant concentrations
-  ├── aqi_utils.calculate_final_aqi() → EPA sub-index → final AQI
-  └── Save to MongoDB predictions collection
+  Hugging Face Hub (optional)
+  └── models/<target>/<timestamp>/{model.pkl, metadata.json}
         │
         ▼
-  Streamlit Dashboard (app/streamlit_app.py)
-  → Real-time visualisation + SHAP explanations
+  Inference (predict.py)
+  ├── twelve regressors → pollutant concentrations (clipped ≥ 0)
+  └── aqi_utils.calculate_final_aqi() → EPA AQI + dominant pollutant
+        │
+        ▼
+  Streamlit dashboard (app/streamlit_app.py)
+  └── current AQI, horizon cards, trends, optional SHAP importances
 ```
+
+Historical bootstrap uses `backfill.py` (~90 days of OpenWeather pollution plus Open-Meteo weather) before the hourly pipeline maintains the live window.
 
 ---
 
-## Tech Stack
+## Tech stack
 
-| Layer | Tool |
+| Layer | Technology |
 |---|---|
 | Language | Python 3.11 |
-| Data Source | OpenWeather Air Pollution API + Open-Meteo (historical weather fallback) |
-| Feature Store | MongoDB Atlas |
-| ML Models | scikit-learn (LR, RF, GB) + XGBoost |
+| Data sources | OpenWeather Air Pollution API; Open-Meteo archive (weather backfill) |
+| Feature store | MongoDB Atlas |
+| ML | scikit-learn (Ridge, RF, GB), XGBoost |
+| Model registry | Hugging Face Hub + local `models/` cache |
 | Explainability | SHAP |
-| Dashboard | Streamlit + Plotly |
-| CI/CD Automation | GitHub Actions |
-| Model Serialisation | joblib |
+| Dashboard | Streamlit, Plotly |
+| Automation | GitHub Actions |
+| Serialisation | joblib |
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
-AQI-Predictor/
-├── .github/
-│   └── workflows/
-│       ├── feature_pipeline.yml    # Hourly: fetch + feature engineering
-│       └── training_pipeline.yml   # Daily:  train + save best model
+├── .github/workflows/
+│   ├── feature_pipeline.yml    # Hourly ingestion + incremental features
+│   └── training_pipeline.yml   # Daily training + HF upload + artefact backup
 ├── app/
-│   └── streamlit_app.py            # Interactive dashboard
+│   └── streamlit_app.py        # Forecast dashboard
 ├── notebooks/
-│   └── 01_eda.ipynb                # Exploratory Data Analysis
+│   └── 01_eda.ipynb            # Exploratory analysis
+├── scripts/
+│   ├── verify_latest_feature.py
+│   └── flush_and_reset.py      # One-time migration reset utility
 ├── src/
-│   ├── config.py                   # Environment / settings loader
-│   ├── database.py                 # MongoDB helper functions
-│   ├── fetch_openweather.py        # API fetch + raw storage
-│   ├── feature_engineering.py      # Lag, rolling, time features
-│   ├── backfill.py                 # Historical data backfill (90 days)
-│   ├── train.py                    # Training pipeline (4 models × 3 targets)
-│   ├── predict.py                  # Inference pipeline
-│   ├── model_registry.py           # Save / load / list models
-│   └── utils.py                    # Shared utilities
-├── models/                         # Saved .pkl model files (gitignored)
-├── data/                           # Local data exports (gitignored)
+│   ├── config.py               # Environment and schema constants
+│   ├── database.py             # MongoDB access layer
+│   ├── fetch_openweather.py    # OpenWeather client
+│   ├── feature_engineering.py  # Batch and incremental feature builders
+│   ├── backfill.py             # Historical raw fetch + batch features
+│   ├── hourly_pipeline.py      # Live hourly orchestration + catch-up
+│   ├── train.py                # Multi-target training pipeline
+│   ├── predict.py              # Multi-horizon inference
+│   ├── model_registry.py       # Save / load with HF + MongoDB
+│   ├── hf_model_registry.py    # Hugging Face Hub I/O
+│   ├── aqi_utils.py            # EPA breakpoint AQI
+│   ├── cleanup_old_models.py   # Legacy registry housekeeping
+│   └── utils.py                # Logging and presentation helpers
+├── models/                     # Local model cache (gitignored)
+├── data/                       # Local exports (gitignored)
 ├── requirements.txt
-├── .env.example
-├── .gitignore
-└── README.md
+└── .gitignore
 ```
 
 ---
 
-## Dataset & Features
+## Data and features
 
-**Source:** OpenWeather [Air Pollution API](https://openweathermap.org/api/air-pollution)
-and Open-Meteo historical weather archive.
+**Sources:** [OpenWeather Air Pollution API](https://openweathermap.org/api/air-pollution) for pollution; Open-Meteo archive for historical weather during backfill.
 
-**Raw fields stored per hour:**
+**Raw hourly fields** include OpenWeather AQI category (1–5), pollutant concentrations (PM2.5, PM10, O₃, NO₂, CO, SO₂, NH₃), and meteorology (temperature, humidity, pressure, wind speed, cloud cover).
 
-| Field | Description |
+**Engineered inputs** (per pollutant where applicable: PM2.5, PM10, O₃, NO₂):
+
+| Category | Examples |
 |---|---|
-| `aqi` | OpenWeather AQI index (1 Good → 5 Very Poor) |
-| `pm2_5` | Fine particulate matter (μg/m³) |
-| `pm10` | Coarse particulate matter (μg/m³) |
-| `no2` | Nitrogen dioxide (μg/m³) |
-| `o3` | Ozone (μg/m³) |
-| `so2` | Sulphur dioxide (μg/m³) |
-| `co` | Carbon monoxide (μg/m³) |
-| `nh3` | Ammonia (μg/m³) |
-| `temperature` | 2 m air temperature (°C) |
-| `humidity` | Relative humidity (%) |
-| `pressure` | Surface pressure (hPa) |
-| `wind_speed` | 10 m wind speed (m/s) |
-| `clouds` | Cloud cover (%) |
+| Calendar | `hour`, `day`, `month`, `weekday`, `is_weekend` |
+| Input signal | `aqi_category` (OpenWeather 1–5, not the forecast target) |
+| Lags | `{pollutant}_lag_1`, `_lag_24`, `_lag_48` |
+| Rolling means | `{pollutant}_rolling_6_mean`, `_rolling_12_mean`, `_rolling_24_mean` |
+| Momentum | `{pollutant}_change_rate` |
 
-**Engineered features:**
+**Supervised targets** (batch / backfill rows only — twelve columns):
 
-| Feature | Description |
-|---|---|
-| `hour`, `day`, `month`, `weekday` | Time-of-day / calendar features |
-| `is_weekend` | Binary weekend flag |
-| `aqi_lag_1`, `aqi_lag_24`, `aqi_lag_48` | AQI 1h, 24h, 48h ago |
-| `pm25_lag_24`, `pm10_lag_24` | PM lags |
-| `aqi_rolling_24_mean` | 24-hour rolling mean AQI |
-| `pm25_rolling_24_mean` | 24-hour rolling mean PM2.5 |
-| `aqi_change_rate` | % change from 24h ago |
+`target_{pollutant}_{24|48|72}h` for `pm2_5`, `pm10`, `o3`, `no2`.
 
-**Target variables:**
-- `target_aqi_24h` — AQI 24 hours from now
-- `target_aqi_48h` — AQI 48 hours from now
-- `target_aqi_72h` — AQI 72 hours from now
+Incremental hourly rows omit targets because future concentrations are unknown at ingest time.
 
 ---
 
-## Model Training
+## Model training
 
-Four models are trained for **each** of the three forecast horizons (12 total runs):
+Training evaluates four regressors per target (48 candidate fits per daily run). Features use a temporal 80/20 split (no shuffle) to respect lag structure. Overfitting is flagged when both test/train RMSE ratio and train–test R² gap exceed configured thresholds; selection prefers non-overfitting models, then lowest test RMSE.
 
-| Model | Notes |
+Winning models are serialised locally, uploaded to Hugging Face when credentials are present, and registered in MongoDB with `active=True` for their target.
+
+| Algorithm | Role |
 |---|---|
-| `LinearRegression` | With StandardScaler preprocessing |
-| `RandomForestRegressor` | 200 trees, max_depth=12 |
-| `GradientBoostingRegressor` | 200 estimators, lr=0.05 |
-| `XGBRegressor` | 200 estimators, lr=0.05 |
+| Ridge (+ StandardScaler) | Linear baseline with correlated lag features |
+| RandomForestRegressor | Shallow ensemble, subsampled rows/features |
+| GradientBoostingRegressor | Boosted trees with regularisation |
+| XGBRegressor | Gradient boosting with L1/L2 penalties |
 
-**Train/test split:** time-ordered, last 20% held out — no random shuffling
-to prevent look-ahead bias from lag features.
-
-**Best model** (lowest RMSE) is saved for each horizon.
+**Metrics:** MAE, RMSE, and R² on train and holdout sets; overfit ratio and R² gap for diagnostics.
 
 ---
 
-## Evaluation Metrics
+## Automation
 
-| Metric | Description |
+| Workflow | Schedule | Responsibility |
+|---|---|---|
+| Feature pipeline | Every hour (`:00` UTC) | Catch-up (≤48 h), live OpenWeather fetch, single-row feature upsert |
+| Training pipeline | Daily 02:00 UTC | Full retrain of 12 targets, HF upload, 30-day Actions artefact backup |
+
+Both workflows support manual dispatch from the GitHub Actions UI.
+
+---
+
+## Configuration
+
+Runtime settings load from environment variables. Local development typically uses a `.env` file; CI injects the same keys as repository secrets.
+
+| Variable | Purpose |
 |---|---|
-| MAE | Mean Absolute Error — average magnitude of prediction error |
-| RMSE | Root Mean Squared Error — penalises large errors more heavily |
-| R² | Coefficient of determination — proportion of variance explained |
+| `OPENWEATHER_API_KEY` | OpenWeather API access (required) |
+| `MONGODB_URI` | MongoDB Atlas connection string (required) |
+| `DB_NAME` | Database name (default: `aqi_predictor`) |
+| `HF_TOKEN` | Hugging Face write token (optional; enables Hub upload) |
+| `HF_REPO_ID` | Hugging Face model repo id (optional; pairs with `HF_TOKEN`) |
+
+Without Hugging Face credentials, models persist locally and metadata still registers in MongoDB; Hub download on fresh runners requires prior upload or a local cache.
 
 ---
 
-## Automation (GitHub Actions)
+## Local development
 
-### Hourly Feature Pipeline
-- Runs at `:00` every hour
-- Fetches latest air pollution + weather for Karachi
-- Recomputes engineered features
-- Stores everything in MongoDB Atlas
-
-### Daily Training Pipeline
-- Runs at 02:00 UTC daily
-- Loads all features from MongoDB
-- Trains 4 models × 3 horizons
-- Saves best models as GitHub Actions artifacts (30-day retention)
-- Records metadata in MongoDB
-
----
-
-## Quick Start — Local Setup
-
-### 1. Clone & install
+A Python 3.11 virtual environment with dependencies from `requirements.txt` provides the runtime. Environment variables supply API and database credentials.
 
 ```bash
-git clone https://github.com/<your-username>/AQI-Predictor.git
-cd AQI-Predictor
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
-
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # macOS / Linux
 pip install -r requirements.txt
 ```
 
-### 2. Configure secrets
+**Initial data:** `backfill.py` populates ~90 days of raw history and batch-engineered features with supervised targets. `--rebuild-features` regenerates the features collection from existing raw rows after schema changes.
 
-```bash
-cp .env.example .env
-# Edit .env and fill in your API key and MongoDB URI
-```
+**Training and inference:** `train.py` fits all twelve targets; `predict.py` loads active models and writes optional forecast documents to MongoDB.
 
-### 3. Backfill historical data (run once)
+**Dashboard:** `streamlit run app/streamlit_app.py` binds the UI to the latest feature row and live predictions.
 
-```bash
-python src/backfill.py
-```
-
-This fetches 90 days of hourly AQI + weather data and engineers features.
-
-### 4. Train models
-
-```bash
-python src/train.py
-```
-
-### 5. Run predictions
-
-```bash
-python src/predict.py
-```
-
-### 6. Launch dashboard
-
-```bash
-streamlit run app/streamlit_app.py
-```
+**Diagnostics:** `scripts/verify_latest_feature.py` compares MongoDB state against `predict.py` output.
 
 ---
 
-## GitHub Actions Secrets Setup
+## Deployment
 
-In your GitHub repository go to **Settings → Secrets and variables → Actions → New repository secret** and add:
+**Streamlit Community Cloud** connects to the repository with main file `app/streamlit_app.py`. Secrets mirror the environment table above (TOML format under Advanced settings).
 
-| Secret name | Value |
-|---|---|
-| `OPENWEATHER_API_KEY` | Your OpenWeather API key |
-| `MONGODB_URI` | Your MongoDB Atlas connection string |
-| `DB_NAME` | `aqi_predictor` (or your chosen DB name) |
+**Container platforms** (Cloud Run, Railway, etc.) use a standard Python 3.11 image, install `requirements.txt`, expose port 8501, and launch Streamlit bound to `0.0.0.0`.
 
 ---
 
-## Deploy Streamlit Dashboard
+## EDA notebook
 
-### Option A — Streamlit Community Cloud (free)
-
-1. Push this repository to GitHub.
-2. Go to [share.streamlit.io](https://share.streamlit.io) and connect your repo.
-3. Set **Main file path** to `app/streamlit_app.py`.
-4. Add your secrets under **Advanced settings → Secrets** in TOML format:
-
-```toml
-OPENWEATHER_API_KEY = "your_key"
-MONGODB_URI = "your_uri"
-DB_NAME = "aqi_predictor"
-```
-
-### Option B — Docker / Cloud Run / Railway
-
-Build the Docker image and deploy to any container platform:
-
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY . .
-EXPOSE 8501
-CMD ["streamlit", "run", "app/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
-```
+`notebooks/01_eda.ipynb` explores historical trends, diurnal and weekly patterns, pollutant correlations, lag/rolling feature behaviour, and target distributions after the feature store contains backfilled data.
 
 ---
 
-## EDA Notebook
+## Future directions
 
-Open `notebooks/01_eda.ipynb` in Jupyter or VS Code. Run all cells after completing the backfill step.
-
-```bash
-jupyter notebook notebooks/01_eda.ipynb
-```
-
-The notebook covers:
-- AQI trend over time
-- PM2.5 & PM10 trends (with WHO guideline references)
-- AQI by hour of day and weekday
-- Correlation heatmap
-- Pollutant vs AQI scatter plots
-- Lag & rolling feature inspection
-- Target distribution analysis
-
----
-
-## Screenshots
-
-> _Add screenshots of your running dashboard here._
-
-| Dashboard | AQI Trend | SHAP Importance |
-|---|---|---|
-| ![Dashboard]() | ![Trend]() | ![SHAP]() |
-
----
-
-## Future Improvements
-
-- [ ] Add LSTM / temporal transformer model for sequence forecasting
-- [ ] Integrate AQICN API as a secondary data source and validation check
-- [ ] Add email/SMS alerts when predicted AQI exceeds threshold
-- [ ] Multi-city support (Lahore, Islamabad, etc.)
-- [ ] Serve predictions via a FastAPI REST endpoint
-- [ ] Deploy to Vertex AI or Hopsworks as a managed feature store
-- [ ] Add drift detection to trigger automated retraining
+- Sequence models (LSTM / temporal transformers) for multi-step forecasting
+- Secondary validation sources (e.g. AQICN)
+- Threshold-based alert channels (email / SMS)
+- Multi-city expansion
+- FastAPI inference endpoint
+- Feature drift monitoring and automated retrain triggers
 
 ---
 

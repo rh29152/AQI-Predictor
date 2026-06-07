@@ -1,26 +1,10 @@
 """
-backfill.py — Historical backfill and feature rebuild for the AQI Predictor.
+backfill.py — Historical raw ingestion and batch feature materialisation.
 
-Normal run (first time setup)
-------------------------------
-    python src/backfill.py
-
-Steps:
-  1. Fetch 90 days of air pollution history from OpenWeather API.
-  2. Fetch matching weather from Open-Meteo (free, no key required).
-  3. Merge + store all records in MongoDB → raw_data collection.
-  4. Run BATCH feature engineering:
-     - lag, rolling, time features for pm2_5, pm10, o3, no2
-     - 12 pollutant target columns (4 pollutants × 3 horizons)
-     - Store all usable rows in MongoDB → features collection.
-
-Rebuild features only (after target column migration)
-------------------------------------------------------
-    python src/backfill.py --rebuild-features
-
-Skips the raw data fetch.  Clears the features collection and rebuilds it
-from the existing raw_data records.  Useful after changing FEATURE_COLUMNS
-or TARGET_COLUMNS without re-fetching data.
+Full mode pulls ~90 days of OpenWeather pollution plus Open-Meteo weather,
+merges and upserts into raw_data, then runs batch feature engineering with
+supervised targets. Rebuild mode skips the API fetch and regenerates features
+from existing raw rows (typical after schema or target definition changes).
 """
 
 from __future__ import annotations
@@ -39,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.config import KARACHI_LAT, KARACHI_LON, CITY_NAME
 from src.database import insert_raw_batch, ensure_indexes
 from src.fetch_openweather import fetch_air_pollution_historical
-from src.feature_engineering import run_feature_pipeline   # BATCH version — creates targets
+from src.feature_engineering import run_feature_pipeline   # batch path (includes targets)
 from src.utils import setup_logging
 
 setup_logging()
@@ -145,12 +129,12 @@ def run_backfill(days: int = BACKFILL_DAYS) -> int:
         days,
     )
 
-    # ── Build weather lookup using Open-Meteo ──────────────────────────────────
+    # Open-Meteo daily weather lookup keyed by hour
     logger.info("Fetching weather data from Open-Meteo…")
     weather_lookup = build_weather_lookup(start_dt, end_dt)
     logger.info("Weather lookup built: %d hourly entries.", len(weather_lookup))
 
-    # ── Fetch air pollution in weekly chunks ───────────────────────────────────
+    # OpenWeather pollution history in weekly API chunks
     all_records: list[dict] = []
     chunk_start = start_dt
     while chunk_start < end_dt:
@@ -172,7 +156,7 @@ def run_backfill(days: int = BACKFILL_DAYS) -> int:
         chunk_start = chunk_end
         time.sleep(RATE_LIMIT_SLEEP)
 
-    # ── Merge weather into pollution records ───────────────────────────────────
+    # Hour-level join of weather fields onto pollution records
     enriched: list[dict] = []
     for rec in all_records:
         dt_key = rec["datetime"].replace(minute=0, second=0, microsecond=0)
@@ -210,7 +194,7 @@ if __name__ == "__main__":
     ensure_indexes()
 
     if args.rebuild_features:
-        # ── Rebuild-only mode: skip raw data fetch ─────────────────────────────
+        # Rebuild-only path: features cleared, batch pipeline re-run on raw_data
         from src.database import get_collection  # noqa: PLC0415
         from src.config import FEATURES_COLLECTION  # noqa: PLC0415
 
@@ -228,7 +212,7 @@ if __name__ == "__main__":
         logger.info("=== REBUILD COMPLETE — ready for train.py ===")
 
     else:
-        # ── Full backfill mode ─────────────────────────────────────────────────
+        # Full backfill path: historical raw fetch followed by batch features
         logger.info("=== STEP 1: RAW DATA BACKFILL ===")
         total = run_backfill(days=BACKFILL_DAYS)
         logger.info("Raw backfill complete: %d records stored in raw_data.", total)

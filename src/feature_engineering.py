@@ -1,33 +1,14 @@
 """
-feature_engineering.py — Build ML features from raw stored data.
+feature_engineering.py — Feature construction from raw air-quality records.
 
-Pollutant-first approach
-------------------------
-This module creates lag, rolling, and target features for the 4 forecast
-pollutants (PM2.5, PM10, O3, NO2).  Final AQI is NOT a target here — it is
-computed in aqi_utils.py from predicted pollutant concentrations.
+Transforms raw pollutant and weather fields into model inputs: calendar features,
+per-pollutant lags, rolling means, and change rates. Final EPA AQI is derived
+downstream in aqi_utils.py rather than modelled directly.
 
-Two operating modes
--------------------
-Batch (backfill)
-    Called once during initial backfill / rebuild.  Engineers features + all
-    12 target labels (4 pollutants × 3 horizons) for the full historical
-    dataset.  Rows where any lag or target value is missing are dropped.
-
-    Entry point: run_feature_pipeline()
-    Caller:      backfill.py
-
-Incremental (hourly)
-    Called every hour after fetch_openweather.py stores the latest raw record.
-    Reads only the last ~73 raw records (enough for 48-h lags + 24-h rolling)
-    and engineers ONE feature row for the newest timestamp.  Target columns
-    are NOT added because future concentrations are unknown.
-
-    Entry point: run_incremental_pipeline()
-    Caller:      hourly_pipeline.py
-
-Run standalone (incremental):
-    python src/feature_engineering.py
+Two modes coexist:
+  • Batch — full history with 12 supervised targets (backfill / rebuild path).
+  • Incremental — one live row from recent raw context; targets omitted when
+    future concentrations are unavailable (hourly path).
 """
 
 from __future__ import annotations
@@ -55,9 +36,7 @@ from src.utils import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# ── Context size ───────────────────────────────────────────────────────────────
-# lag_48 needs 48 prior rows; rolling_24 needs 24 prior rows.
-# 48 (lag) + 24 (rolling window) + 1 (new row) = 73 minimum.
+# Minimum raw context: 48 h lag + 24 h rolling window + current row = 73
 LAG_CONTEXT_ROWS = 73
 
 
@@ -91,9 +70,8 @@ def _add_time_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def _add_aqi_category(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Rename the OpenWeather 'aqi' column to 'aqi_category' so it is clearly
-    an input feature, not the ML target.  The original 'aqi' column is kept
-    for backward-compat raw_data displays (e.g. EDA).
+    Maps OpenWeather `aqi` (1–5) to `aqi_category` as a model input feature.
+    The original `aqi` column is retained for raw_data and EDA compatibility.
     """
     if "aqi" in df.columns:
         df["aqi_category"] = df["aqi"]
@@ -102,18 +80,9 @@ def _add_aqi_category(df: pd.DataFrame) -> pd.DataFrame:
 
 def _add_lag_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add lag and rolling features for all 4 forecast pollutants.
-
-    For each pollutant (pm2_5, pm10, o3, no2):
-      - lag_1  : concentration 1 hour ago
-      - lag_24 : concentration 24 hours ago
-      - lag_48 : concentration 48 hours ago
-      - rolling_6_mean  : 6-hour rolling mean (shift-1 to avoid leakage)
-      - rolling_12_mean : 12-hour rolling mean
-      - rolling_24_mean : 24-hour rolling mean
-      - change_rate     : % change vs 24 h ago
-
-    df must be sorted ascending by datetime.  Mutates df in-place.
+    Per-pollutant lag, rolling-mean, and change-rate features for pm2_5, pm10,
+    o3, and no2. Rolling windows use shift(1) to avoid same-hour leakage.
+    Requires ascending datetime order; mutates the frame in place.
     """
     for poll in POLLUTANTS_TO_FORECAST:
         if poll not in df.columns:
@@ -138,12 +107,10 @@ def _add_lag_rolling_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def _add_target_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add future pollutant target columns by shifting concentrations forward.
+    Forward-shifted pollutant concentrations as supervised targets (batch mode).
 
-    Only valid when the full dataset is available (batch/backfill mode).
-    The last 72 rows will have NaN targets and are dropped afterwards.
-
-    Creates 12 targets: 4 pollutants × 3 horizons (24h, 48h, 72h).
+    Trailing 72 rows lack future values and are dropped in build_features_batch.
+    Produces twelve columns: four pollutants × 24/48/72 h horizons.
     """
     for poll in POLLUTANTS_TO_FORECAST:
         if poll not in df.columns:
@@ -157,21 +124,10 @@ def _add_target_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_features_batch(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Build a complete feature DataFrame from a full raw history.
+    Full feature matrix from raw history including lags, rolling stats, and targets.
 
-    Includes all lag, rolling, and target columns for all 4 pollutants.
-    Drops rows where any required lag or target value is missing (the first
-    48 and last 72 hours of the window cannot be fully populated).
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        All raw records sorted ascending by datetime.
-
-    Returns
-    -------
-    pd.DataFrame
-        Training-ready feature rows with all 12 target columns.
+    Rows at the window edges (first ~48 h, last ~72 h) are dropped when lags
+    or forward targets cannot be computed.
     """
     feat = df.copy()
     feat = _add_time_features(feat)
@@ -179,7 +135,7 @@ def build_features_batch(df: pd.DataFrame) -> pd.DataFrame:
     feat = _add_lag_rolling_features(feat)
     feat = _add_target_features(feat)
 
-    # Require all lag and target columns to be non-null
+    # Rows missing any required lag or target column are dropped
     must_be_present: list[str] = []
     for poll in POLLUTANTS_TO_FORECAST:
         must_be_present += [
@@ -206,7 +162,7 @@ def store_features(feat: pd.DataFrame) -> None:
         doc = row.to_dict()
         if hasattr(doc["datetime"], "to_pydatetime"):
             doc["datetime"] = doc["datetime"].to_pydatetime()
-        # Remove NaN values to keep documents clean
+        # Omit NaN fields from stored documents
         doc = {k: v for k, v in doc.items() if v == v}  # filters out float NaN
         records.append(doc)
     count = insert_features_batch(records)
@@ -215,11 +171,10 @@ def store_features(feat: pd.DataFrame) -> None:
 
 def run_feature_pipeline() -> pd.DataFrame:
     """
-    BATCH entry point — called by backfill.py (full build or --rebuild-features).
+    Batch pipeline: materialise labelled features for the full raw history.
 
-    Loads ALL raw records → engineers full features + all 12 pollutant targets
-    → stores all rows in the features collection.
-    Do NOT call this from the hourly pipeline.
+    Used by backfill and feature-rebuild flows; the hourly path relies on
+    run_incremental_pipeline instead.
     """
     raw_df  = load_raw_data()
     feat_df = build_features_batch(raw_df)
@@ -231,32 +186,21 @@ def run_feature_pipeline() -> pd.DataFrame:
 
 def build_features_incremental(context_df: pd.DataFrame) -> dict:
     """
-    Build ONE feature row for the newest record in context_df.
+    Single feature dict for the newest row in context_df.
 
-    context_df must be sorted ascending by datetime and contain at least
-    LAG_CONTEXT_ROWS entries.  The last row is the new record.
-    No target columns are added — future concentrations are not known yet.
-
-    Parameters
-    ----------
-    context_df : pd.DataFrame
-        Last LAG_CONTEXT_ROWS raw records, sorted oldest → newest.
-
-    Returns
-    -------
-    dict
-        Feature dict for the newest timestamp, ready for MongoDB upsert.
+    Expects ascending datetime order and at least LAG_CONTEXT_ROWS rows.
+    Target columns are omitted — future concentrations are unknown at ingest time.
     """
     feat = context_df.copy()
     feat = _add_time_features(feat)
     feat = _add_aqi_category(feat)
     feat = _add_lag_rolling_features(feat)
-    # No target features — future pollutant values are unavailable
+    # Supervised targets excluded in incremental mode
 
     latest = feat.iloc[-1].to_dict()
     if hasattr(latest["datetime"], "to_pydatetime"):
         latest["datetime"] = latest["datetime"].to_pydatetime()
-    # Remove NaN values to keep the document clean
+    # Omit NaN fields from stored document
     latest = {k: v for k, v in latest.items() if v == v}
     return latest
 
@@ -276,10 +220,10 @@ def _build_incremental_from_context(context_df: pd.DataFrame) -> dict:
 
 def run_incremental_for_datetime(target_dt: datetime) -> dict | None:
     """
-    Compute and upsert features for a specific hourly timestamp.
+    Feature row for a specific hourly timestamp (catch-up path).
 
-    Reads raw history up to target_dt for lag context.  Used by catch-up
-    mode to process missing hours in chronological order.
+    Loads raw context up to target_dt; returns None when context is insufficient
+    or no raw row exists at that hour.
     """
     if target_dt.tzinfo is None:
         target_dt = target_dt.replace(tzinfo=timezone.utc)
@@ -318,16 +262,10 @@ def run_incremental_for_datetime(target_dt: datetime) -> dict | None:
 
 def run_incremental_pipeline() -> dict:
     """
-    INCREMENTAL entry point — called by hourly_pipeline.py.
+    Incremental pipeline for the latest raw snapshot.
 
-    1. Reads the last LAG_CONTEXT_ROWS raw records from MongoDB.
-    2. Computes features for the newest (latest) record only.
-    3. Upserts that single feature row into the features collection.
-
-    Returns
-    -------
-    dict
-        The feature row that was upserted.
+    Pulls LAG_CONTEXT_ROWS of history, engineers the trailing row, and upserts
+    one document into the features collection.
     """
     context = get_raw_history(n=LAG_CONTEXT_ROWS)
     if len(context) < 2:

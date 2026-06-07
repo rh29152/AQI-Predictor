@@ -1,4 +1,7 @@
-"""Quick check: latest MongoDB raw/features vs dashboard predictions."""
+"""
+verify_latest_feature.py — Diagnostic script comparing latest MongoDB rows
+to live predict.py output (raw counts, feature lags, computed AQI, forecasts).
+"""
 import sys
 from pathlib import Path
 

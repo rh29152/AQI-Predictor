@@ -50,21 +50,21 @@ def get_collection(name: str) -> Collection:
 
 def ensure_indexes() -> None:
     """Create indexes that speed up common queries (idempotent)."""
-    # raw_data: unique per (datetime, city) — prevents duplicate hourly records
+    # raw_data: uniqueness on (datetime, city)
     raw = get_collection(RAW_COLLECTION)
     raw.create_index([("datetime", ASCENDING), ("city", ASCENDING)], unique=True)
 
-    # features: unique per datetime — upsert by this key
+    # features: uniqueness on datetime (upsert key)
     feats = get_collection(FEATURES_COLLECTION)
     feats.create_index([("datetime", ASCENDING)], unique=True)
 
-    # model_registry: fast lookup by (target, active) + recency sort
+    # model_registry: target + active + recency lookups
     models = get_collection(MODELS_COLLECTION)
     models.create_index([("trained_at", ASCENDING)])
     models.create_index([("target", ASCENDING), ("trained_at", ASCENDING)])
     models.create_index([("target", ASCENDING), ("active", ASCENDING), ("trained_at", ASCENDING)])
 
-    # predictions: lookup by horizon and time
+    # predictions: horizon and time-range queries
     preds = get_collection(PREDICTIONS_COLLECTION)
     preds.create_index([("predicted_at", ASCENDING)])
     preds.create_index([("horizon_hours", ASCENDING), ("predicted_at", ASCENDING)])
@@ -125,17 +125,10 @@ def insert_features_batch(records: list[dict[str, Any]]) -> int:
 
 def get_training_data(limit: int = 0) -> list[dict[str, Any]]:
     """
-    Retrieve feature documents that have ALL 12 pollutant target columns
-    populated (4 pollutants × 3 horizons = 12 targets).
+    Feature rows with all twelve pollutant target columns populated.
 
-    Rows inserted by the incremental (hourly) pipeline do NOT have target
-    columns because future concentrations are unknown — they are excluded here
-    so the training pipeline never trains on incomplete labels.
-
-    Parameters
-    ----------
-    limit : int
-        Max number of documents to return (0 = no limit).
+    Incremental hourly rows omit targets and are excluded here so training
+    never sees incomplete labels.
     """
     from src.config import POLLUTANTS_TO_FORECAST, FORECAST_HORIZONS  # noqa: PLC0415
     col = get_collection(FEATURES_COLLECTION)
@@ -215,14 +208,10 @@ def get_latest_feature_datetime() -> datetime | None:
 
 def get_all_features() -> list[dict[str, Any]]:
     """
-    Return ALL feature rows sorted ascending by datetime.
+    All feature rows sorted ascending by datetime, without target filtering.
 
-    Unlike get_training_data(), this does NOT filter by target column
-    presence.  The training pipeline uses this so each call to
-    train_for_target() can drop only the rows missing *that specific*
-    target column, maximising the training set for each of the 12 targets.
-    Hourly incremental rows (no targets at all) are naturally excluded
-    per-target by the .dropna() in train_for_target().
+    Per-target training drops rows missing that target only, so each horizon
+    can use the widest available labelled window.
     """
     col = get_collection(FEATURES_COLLECTION)
     return list(col.find({}, {"_id": 0}).sort("datetime", ASCENDING))
@@ -313,7 +302,7 @@ def get_latest_model_metadata(target: str | None = None) -> dict[str, Any] | Non
     if target:
         base_query["target"] = target
 
-    # Prefer active=True; fall back to any record for backward compat
+    # Legacy rows without active flag remain discoverable
     active_query = {**base_query, "active": True}
     doc = col.find_one(active_query, {"_id": 0}, sort=[("trained_at", -1)])
     if doc is None:

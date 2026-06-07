@@ -1,11 +1,9 @@
 """
-config.py — Central configuration loader.
+config.py — Central configuration loaded from environment variables.
 
-Reads all settings from environment variables.
-  - Set them in .env for local development.
-  - Inject them as GitHub Actions repository secrets in CI/CD.
+Local development reads `.env`; CI injects the same keys via repository secrets.
+Missing required keys raise at import time so misconfiguration surfaces early.
 """
-
 import os
 from dotenv import load_dotenv
 
@@ -59,16 +57,14 @@ PREDICTIONS_COLLECTION: str = "predictions"
 POLLUTANTS_TO_FORECAST: list[str] = ["pm2_5", "pm10", "o3", "no2"]
 FORECAST_HORIZONS: list[int] = [24, 48, 72]
 
-# 12 target columns generated automatically (4 pollutants × 3 horizons)
+# Twelve supervised targets: four pollutants × three forecast horizons
 TARGET_COLUMNS: list[str] = [
     f"target_{pollutant}_{horizon}h"
     for pollutant in POLLUTANTS_TO_FORECAST
     for horizon in FORECAST_HORIZONS
 ]
 
-# ── Feature columns (model input) ─────────────────────────────────────────────
-# These are the features every trained model expects in this exact order.
-# Do NOT include target columns here.
+# Model input schema — ordered feature list shared by training and inference
 FEATURE_COLUMNS: list[str] = [
     # Raw pollutant concentrations (μg/m³)
     "pm2_5", "pm10", "o3", "no2", "co", "so2", "nh3",
@@ -76,7 +72,7 @@ FEATURE_COLUMNS: list[str] = [
     "temperature", "humidity", "pressure", "wind_speed", "clouds",
     # Calendar / time-of-day
     "hour", "day", "month", "weekday", "is_weekend",
-    # OpenWeather AQI category (1-5) kept as an input signal, not as target
+    # OpenWeather AQI category (1–5); input signal only, not the forecast target
     "aqi_category",
     # PM2.5 lag & rolling features
     "pm2_5_lag_1", "pm2_5_lag_24", "pm2_5_lag_48",
@@ -96,8 +92,7 @@ FEATURE_COLUMNS: list[str] = [
     "no2_change_rate",
 ]
 
-# ── AQI category mapping (OpenWeather 1-5 scale — for raw_data display only) ──
-# Do NOT use this as the final AQI. Use aqi_utils.py for EPA 0-500 AQI.
+# OpenWeather 1–5 scale labels (raw_data display); EPA 0–500 AQI lives in aqi_utils
 AQI_CATEGORIES: dict[int, str] = {
     1: "Good",
     2: "Fair",

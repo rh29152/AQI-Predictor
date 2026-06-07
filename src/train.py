@@ -1,37 +1,14 @@
 """
-train.py — Daily training pipeline: 4 ML models × 12 pollutant targets.
+train.py — Supervised training for pollutant concentration models.
 
-Data source
------------
-Loads ALL feature rows from MongoDB (features collection) sorted by datetime.
-Each call to train_for_target() drops only the rows where *that specific*
-target column is missing, so each of the 12 targets gets the maximum possible
-training set.  Hourly incremental rows (no target columns at all) are excluded
-automatically by the per-target .dropna() step.
+Trains Ridge, Random Forest, Gradient Boosting, and XGBoost candidates for
+each of 12 targets (pm2_5, pm10, o3, no2 × 24h/48h/72h). Selection prefers
+non-overfitting models by test RMSE under a fixed time-based holdout. Winners
+are serialised locally, uploaded to Hugging Face Hub when configured, and
+registered in MongoDB with full train/test diagnostics.
 
-This script does NOT call the API, fetch raw data, or run feature engineering.
-It purely trains on what is already in MongoDB.
-
-12 targets: 4 pollutants (pm2_5, pm10, o3, no2) × 3 horizons (24h, 48h, 72h)
-48 candidate trainings total (12 targets × 4 algorithms).
-
-Per target:
-  1. Time-based train/test split — last 20% held out (no random shuffle)
-  2. Train: Ridge (+ StandardScaler), RandomForestRegressor,
-            GradientBoostingRegressor, XGBRegressor
-  3. Evaluate train + test: MAE, RMSE, R²
-  4. Overfitting rule: overfit_ratio > 1.5 AND r2_gap > 0.4
-  5. Select best model: prefer non-overfitting, then lowest test RMSE
-  6. Save winning model via model_registry.save_model():
-       a. Save .pkl locally (models/ folder)
-       b. Upload model.pkl + metadata.json to Hugging Face Hub
-       c. Mirror metadata (metrics, pollutant, horizon_hours) in MongoDB
-
-Run standalone:
-    python src/train.py
-
-Required environment variables (in addition to MONGODB_URI etc.):
-    HF_TOKEN, HF_REPO_ID  (see .env.example or config.py)
+Consumes labelled rows already present in the features collection; no API or
+feature-engineering side effects.
 """
 
 from __future__ import annotations
@@ -64,9 +41,7 @@ TEST_RATIO = 0.2   # last 20% of data used for testing (time-ordered)
 OVERFIT_RATIO_THRESHOLD = 1.5
 OVERFIT_R2_GAP_THRESHOLD = 0.4
 
-# Hyperparameters for ~2k hourly rows, ~46 features, 80/20 time split.
-# Lighter than previous settings to reduce training time and avoid overfitting
-# on the relatively small dataset (~1,575 train / ~395 test rows).
+# Tuned for ~2k hourly rows, ~46 features, 80/20 temporal holdout
 MODEL_CONFIG = {
     "ridge_alpha": 1.0,
     "rf_n_estimators": 100,
@@ -88,15 +63,10 @@ MODEL_CONFIG = {
 
 def load_features() -> pd.DataFrame:
     """
-    Load ALL feature rows from MongoDB, sorted by datetime.
+    All feature rows from MongoDB, sorted by datetime.
 
-    Does NOT filter by target column presence — each train_for_target() call
-    drops rows where its specific target is NaN via .dropna().  This means
-    every target gets the maximum usable training set, and partial rows
-    (e.g. a row that has 24h targets but whose 72h future is not yet known)
-    contribute correctly to the shorter-horizon models.
-
-    Raises ValueError if the collection is completely empty.
+    Per-target .dropna() in train_for_target() keeps each horizon's widest
+    labelled window without requiring all twelve targets on every row.
     """
     docs = get_all_features()
     if not docs:
@@ -143,8 +113,7 @@ def compute_model_metrics(
 
     r2_gap = round(train["r2"] - test["r2"], 4)
 
-    # AND condition: both ratio AND r2_gap must exceed thresholds.
-    # Using OR was too aggressive and flagged mildly regularized models.
+    # Conjunctive threshold — disjunctive OR flagged mild regularisation as overfit
     is_overfitting = (
         overfit_ratio > OVERFIT_RATIO_THRESHOLD
         and r2_gap > OVERFIT_R2_GAP_THRESHOLD
@@ -161,7 +130,7 @@ def compute_model_metrics(
         "overfit_ratio": overfit_ratio,
         "r2_gap": r2_gap,
         "is_overfitting": is_overfitting,
-        # Backward-compatible aliases (test metrics used by dashboard)
+        # Backward-compatible metric aliases (test set used by dashboard)
         "mae": test["mae"],
         "rmse": test_rmse,
         "r2": test["r2"],
@@ -240,7 +209,7 @@ def get_models() -> dict[str, Any]:
         "LinearRegression": Pipeline(
             [
                 ("scaler", StandardScaler()),
-                # Ridge avoids unstable coefficients from correlated lag/pollutant features
+                # Ridge + scaler for correlated lag and pollutant features
                 ("model", Ridge(alpha=cfg["ridge_alpha"])),
             ]
         ),
@@ -288,8 +257,7 @@ def _parse_target(target: str) -> tuple[str, int]:
 
     Example: 'target_pm2_5_24h' → ('pm2_5', 24)
     """
-    # target format: target_<pollutant>_<hours>h
-    # e.g. target_pm2_5_24h, target_no2_72h
+    # Column pattern: target_<pollutant>_<hours>h (e.g. target_pm2_5_24h)
     parts = target.removeprefix("target_").rsplit("_", 1)
     pollutant = parts[0]
     horizon_h = int(parts[1].rstrip("h"))
@@ -326,10 +294,9 @@ def train_for_target(df: pd.DataFrame, target: str) -> dict[str, Any]:
         return {"target": target, "best_model": None, "best_rmse": float("inf"),
                 "all_overfitting": False, "all_results": {}}
 
-    # Drop only rows where THIS target is missing — other targets may be NaN
+    # Per-target label filter; other horizons may remain NaN on the same row
     sub = df[available_features + [target]].dropna(subset=[target])
-    # Fill any remaining NaN in feature columns with 0 (can occur for the
-    # first few lag rows or if an optional feature is absent)
+    # Residual NaN in features → 0 (early lag rows or optional fields)
     X = sub[available_features].fillna(0).values
     y = sub[target].values
 
@@ -417,7 +384,7 @@ def train_for_target(df: pd.DataFrame, target: str) -> dict[str, Any]:
 # ── Main training pipeline ─────────────────────────────────────────────────────
 
 def run_training() -> list[dict[str, Any]]:
-    """Run the full training pipeline across all 12 pollutant targets."""
+    """Full training pass over all twelve pollutant×horizon targets."""
     df = load_features()
     summary = []
     for target in TARGET_COLUMNS:

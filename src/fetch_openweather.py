@@ -1,5 +1,5 @@
 """
-fetch_openweather.py — Fetch current air pollution + weather data from OpenWeather.
+fetch_openweather.py — OpenWeather air pollution and weather ingestion for Karachi.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import requests
 
-# Allow running as a script from the project root
+# Supports direct execution from the project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import (

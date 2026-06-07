@@ -1,16 +1,9 @@
 """
-flush_and_reset.py — One-time migration script.
+flush_and_reset.py — One-time migration reset for features, models, and predictions.
 
-Clears:
-  1. MongoDB features collection (old target_aqi_* rows)
-  2. MongoDB model_registry collection (old model metadata)
-  3. Hugging Face Hub repo contents (old .pkl files)
-  4. Local models/ folder (old .pkl files)
-
-raw_data is NOT touched.
-
-Run ONCE before rebuilding features:
-    py -3 scripts/flush_and_reset.py
+Clears MongoDB features, model_registry, and predictions collections; removes
+local models/*.pkl; optionally wipes Hugging Face Hub model paths. raw_data is
+preserved. Intended for schema or target-definition migrations only.
 """
 
 from __future__ import annotations

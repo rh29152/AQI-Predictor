@@ -1,20 +1,10 @@
 """
 predict.py — Pollutant-first AQI forecasting for Karachi.
 
-Approach
---------
-1. Load the latest feature row from MongoDB (written by the hourly pipeline).
-2. For each of the 12 targets (4 pollutants × 3 horizons):
-   - Load the latest best model from model_registry / HF Hub cache.
-   - Predict the pollutant concentration (μg/m³).
-   - Clip negative predictions to 0 (concentrations cannot be negative).
-3. Group predictions by horizon (24h, 48h, 72h).
-4. For each horizon, pass the pollutant concentration dict to
-   aqi_utils.calculate_final_aqi() to compute the EPA-style AQI.
-5. Return and optionally persist full forecast documents.
-
-Run standalone:
-    python src/predict.py
+Loads the most recent feature row, runs 12 horizon-specific regressors (four
+pollutants × three lead times), clips negative concentrations, and aggregates
+sub-indices into an EPA-style AQI via aqi_utils.calculate_final_aqi().
+Results may be returned in memory or persisted to the predictions collection.
 """
 
 from __future__ import annotations
@@ -102,7 +92,7 @@ def predict_all_horizons(save_to_db: bool = False) -> dict[str, Any]:
 
     predicted_at = utc_now()
 
-    # ── Latest timestamp for deriving target_time ──────────────────────────────
+    # Anchor forecast target_time to the latest feature timestamp
     latest_dt = pd.to_datetime(features[-1]["datetime"], utc=True)
 
     results: dict[str, Any] = {}
@@ -114,13 +104,12 @@ def predict_all_horizons(save_to_db: bool = False) -> dict[str, Any]:
         for pollutant in POLLUTANTS_TO_FORECAST:
             target_key = f"target_{pollutant}_{horizon_h}h"
             try:
-                # load_model() prints full verification log (target, algorithm,
-                # trained_at, hf_path, active flag) before returning the model.
+                # load_model emits target, algorithm, trained_at, hf_path, active audit line
                 model, meta = load_model(target=target_key)
                 feature_columns = meta.get("feature_columns", FEATURE_COLUMNS)
                 X = prepare_input(features, feature_columns)
                 raw_pred = float(model.predict(X)[0])
-                concentration = max(0.0, raw_pred)   # clip negatives
+                concentration = max(0.0, raw_pred)   # non-negative concentrations
                 pollutant_predictions[pollutant] = round(concentration, 2)
                 logger.info(
                     "  [+%dh] %s = %.2f ug/m3",

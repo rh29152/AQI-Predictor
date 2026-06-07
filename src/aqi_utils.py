@@ -1,30 +1,12 @@
 """
 aqi_utils.py — EPA-style AQI sub-index calculation.
 
-This module converts forecast pollutant concentrations (μg/m³) into AQI
-sub-indices using EPA breakpoint interpolation.  The final AQI is the maximum
-sub-index, dominated by the worst pollutant.
+Converts forecast pollutant concentrations (μg/m³) into sub-indices via EPA
+breakpoint interpolation; the reported AQI is the maximum sub-index (dominant
+pollutant). Hourly forecast values approximate regulatory averaging windows
+(PM 24 h, O₃ 8 h, NO₂ 1 h) for educational forecasting — not regulatory AQI.
 
-IMPORTANT — averaging window disclaimer
-----------------------------------------
-Official EPA AQI calculations use specific pollutant averaging windows:
-  - PM2.5 : 24-hour average
-  - PM10  : 24-hour average
-  - O3    : 8-hour average (for AQI ≤ 300) or 1-hour average (for AQI > 300)
-  - NO2   : 1-hour average
-
-This project forecasts hourly pollutant concentrations and uses them directly
-as approximations for these averaging windows.  This is an educational
-approximation for forecasting purposes.  Results should NOT be interpreted
-as regulatory-grade AQI values.
-
-Formula
--------
 AQI = ((I_high - I_low) / (C_high - C_low)) × (C - C_low) + I_low
-
-where C is the pollutant concentration, [C_low, C_high] is the breakpoint
-concentration range containing C, and [I_low, I_high] is the corresponding
-AQI range.
 """
 
 from __future__ import annotations
@@ -52,9 +34,7 @@ _PM10_BREAKPOINTS = [
     (425, 604, 301, 500),
 ]
 
-# O3 breakpoints converted from ppm to μg/m³ (1 ppm ≈ 1960 μg/m³ at 25°C).
-# Based on EPA 8-hour O3 standard.  Hourly forecast concentrations are used
-# as an approximation of the 8-hour rolling average.
+# O₃ breakpoints in μg/m³ (1 ppm ≈ 1960 μg/m³ at 25 °C); hourly values stand in for 8 h average
 _O3_BREAKPOINTS = [
     (0,   108, 0,   50),
     (109, 140, 51,  100),
@@ -64,8 +44,7 @@ _O3_BREAKPOINTS = [
     (401, 800, 301, 500),
 ]
 
-# NO2 breakpoints converted from ppb to μg/m³ (1 ppb NO2 ≈ 1.88 μg/m³ at 25°C).
-# Based on EPA 1-hour NO2 standard, which aligns with hourly forecast data.
+# NO₂ breakpoints in μg/m³ (1 ppb ≈ 1.88 μg/m³ at 25 °C); aligned with 1 h EPA standard
 _NO2_BREAKPOINTS = [
     (0,    100,  0,   50),
     (101,  188,  51,  100),

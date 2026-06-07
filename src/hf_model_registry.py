@@ -1,28 +1,9 @@
 """
-hf_model_registry.py — Hugging Face Hub model registry.
+hf_model_registry.py — Hugging Face Hub artefact storage.
 
-Replaces Vertex AI / GCS as the remote model store.
-Uses the free huggingface_hub SDK — no billing account required.
-
-Repository layout on HF Hub
-----------------------------
-<HF_REPO_ID>/
-└── models/
-    ├── target_aqi_24h/
-    │   └── <timestamp>/
-    │       ├── model.pkl        ← serialised sklearn/XGBoost model
-    │       └── metadata.json    ← metrics, feature_columns, etc.
-    ├── target_aqi_48h/
-    │   └── ...
-    └── target_aqi_72h/
-        └── ...
-
-Graceful degradation
---------------------
-Every public function checks HF_ENABLED before calling any HF API.
-If HF_TOKEN or HF_REPO_ID is missing the functions log a warning and
-return None, so the project still runs in local-only mode (models
-stored only in the models/ folder).
+Remote layout: models/<target>/<timestamp>/{model.pkl, metadata.json} under
+HF_REPO_ID. Public repo type allows Streamlit Cloud pulls without a token.
+Functions no-op with a warning when HF_TOKEN or HF_REPO_ID is unset.
 """
 
 from __future__ import annotations
@@ -129,14 +110,14 @@ def upload_model_to_hf(
         )
         return None, None
 
-    # Ensure the repo exists before uploading
+    # Repo initialisation before first upload
     if create_or_get_repo() is None:
         return None, None
 
     hf_model_path    = f"models/{target}/{timestamp}/model.pkl"
     hf_metadata_path = f"models/{target}/{timestamp}/metadata.json"
 
-    # Build metadata dict (must be JSON-serialisable)
+    # JSON-serialisable metadata sidecar
     metadata_dict: dict[str, Any] = {
         "registry":          "huggingface",
         "hf_repo_id":        cfg.HF_REPO_ID,
@@ -217,7 +198,7 @@ def download_model_from_hf(
     Path to the downloaded file, or None on failure.
     """
     cfg = _cfg()
-    # Allow download with or without a token (public repos work without one)
+    # Public repos permit tokenless download
     token = cfg.HF_TOKEN if cfg.HF_ENABLED else None
 
     try:

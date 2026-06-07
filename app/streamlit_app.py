@@ -1,9 +1,8 @@
 """
-streamlit_app.py — Karachi AQI Predictor Dashboard.
-Beautiful pollutant-first forecast dashboard with custom HTML/CSS.
+streamlit_app.py — Karachi AQI Predictor dashboard.
 
-Launch:
-    streamlit run app/streamlit_app.py
+Pollutant-first forecast UI: current EPA AQI from the latest feature row,
+24/48/72 h horizon cards, historical trends, and optional SHAP importances.
 """
 
 from __future__ import annotations
@@ -288,8 +287,8 @@ def divider() -> None:
 @st.cache_data(ttl=300)
 def load_dashboard_data(hours: int = 168) -> tuple[pd.DataFrame, dict]:
     """
-    Load features + forecasts in one cached call so both always share
-    the same latest MongoDB timestamp (avoids mismatched TTL caches).
+    Single cached load of features and live forecasts so both share the same
+    latest MongoDB timestamp.
     """
     rows = get_latest_features(n=hours)
     if not rows:
@@ -306,7 +305,7 @@ def load_dashboard_data(hours: int = 168) -> tuple[pd.DataFrame, dict]:
 
 
 def forecast_target_str(latest_dt: pd.Timestamp, hz: str) -> str:
-    """Derive +24h/+48h/+72h target time from the same base as current AQI."""
+    """Horizon target timestamp anchored to the latest feature row."""
     hours = int(hz.replace("h", ""))
     return (latest_dt + pd.Timedelta(hours=hours)).strftime("%d %b %Y  %H:%M UTC")
 
@@ -332,7 +331,7 @@ def aqi_trend_chart(df: pd.DataFrame) -> go.Figure:
         fill="tozeroy", fillcolor="rgba(99,179,237,0.08)",
         hovertemplate="<b>%{x|%b %d %H:%M}</b><br>AQI: %{y}<extra></extra>",
     ))
-    # 7-day rolling average
+    # Rolling mean for trend smoothing
     roll = df.set_index("datetime")["computed_aqi"].rolling("7D").mean().reset_index()
     fig.add_trace(go.Scatter(
         x=roll["datetime"], y=roll["computed_aqi"],
@@ -489,10 +488,10 @@ try:
 except Exception:
     pass
 
-# Load data (features + forecasts fetched together — always in sync)
+# Shared data load — features and forecasts from one cache key
 df, forecasts = load_dashboard_data(hours=hours_window)
 
-# Compute current AQI from latest feature row
+# Current AQI derived from the newest feature row pollutants
 current_aqi_result: dict | None = None
 latest_data_dt: pd.Timestamp | None = None
 if not df.empty:
@@ -591,7 +590,7 @@ if "error" not in forecasts and forecasts:
             continue
         # Header strip
         st.markdown(pollutant_hz_header(hz, aqi_v, cat_v, clr_v), unsafe_allow_html=True)
-        # Pollutant pills — one pill per Streamlit column (no nested HTML)
+        # One Streamlit column per pollutant pill (avoids nested HTML rendering)
         pill_cols = st.columns(len(polls))
         for col, (poll, conc) in zip(pill_cols, polls.items()):
             with col:
