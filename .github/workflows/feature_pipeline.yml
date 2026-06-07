@@ -1,12 +1,12 @@
-name: Feature Pipeline (Hourly)
+name: Feature Pipeline (Every 2 Hours)
 
-# Hourly incremental ingestion with optional catch-up (default 48 h gap fill):
+# Incremental ingestion every 2 hours with optional catch-up (default 48 h gap fill):
 # OpenWeather fetch → raw_data upsert → single-row feature engineering → features upsert.
 # Full historical features require a one-time backfill.py run beforehand.
 
 on:
   schedule:
-    - cron: "0 * * * *"   # every hour at :00 UTC
+    - cron: "0 */2 * * *"   # every 2 hours at :00 UTC (00:00, 02:00, 04:00, …)
   workflow_dispatch:
 
 concurrency:

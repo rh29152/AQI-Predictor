@@ -13,7 +13,7 @@ The design follows a **pollutant-first** approach: models predict future concent
 ```
 OpenWeather API (air pollution + weather)
         │
-        ▼  hourly — GitHub Actions
+        ▼  every 2 h — GitHub Actions
   Feature pipeline (hourly_pipeline.py)
   ├── fetch_openweather.py      — live and historical raw ingestion
   ├── feature_engineering.py    — lag, rolling, calendar features
@@ -46,7 +46,7 @@ OpenWeather API (air pollution + weather)
   └── current AQI, horizon cards, trends, optional SHAP importances
 ```
 
-Historical bootstrap uses `backfill.py` (~90 days of OpenWeather pollution plus Open-Meteo weather) before the hourly pipeline maintains the live window.
+Historical bootstrap uses `backfill.py` (~90 days of OpenWeather pollution plus Open-Meteo weather) before the feature pipeline maintains the live window on a two-hour schedule.
 
 ---
 
@@ -70,7 +70,7 @@ Historical bootstrap uses `backfill.py` (~90 days of OpenWeather pollution plus 
 
 ```
 ├── .github/workflows/
-│   ├── feature_pipeline.yml    # Hourly ingestion + incremental features
+│   ├── feature_pipeline.yml    # Every-2h ingestion + incremental features
 │   └── training_pipeline.yml   # Daily training + HF upload + artefact backup
 ├── app/
 │   └── streamlit_app.py        # Forecast dashboard
@@ -147,7 +147,7 @@ Winning models are serialised locally, uploaded to Hugging Face when credentials
 | Workflow | Schedule | Responsibility |
 |---|---|---|
 | CI | Push / PR to `main` or `master` | Compile, import smoke test, CLI check |
-| Feature pipeline | Every hour (`:00` UTC) | Catch-up (≤48 h), live OpenWeather fetch, single-row feature upsert |
+| Feature pipeline | Every 2 hours (`:00` UTC — 00:00, 02:00, 04:00, …) | Catch-up (≤48 h), live OpenWeather fetch, single-row feature upsert |
 | Training pipeline | Daily 02:00 UTC | Full retrain of 12 targets, HF upload, 30-day Actions artefact backup |
 
 Pipeline workflows install `requirements-ci.txt` (lighter than the full `requirements.txt` used locally). All three support manual dispatch from the GitHub Actions UI. Missing required secrets fail fast with annotated errors in the log.
