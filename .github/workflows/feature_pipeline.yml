@@ -4,10 +4,13 @@ name: Feature Pipeline (Every 2 Hours)
 # OpenWeather fetch → raw_data upsert → single-row feature engineering → features upsert.
 # Full historical features require a one-time backfill.py run beforehand.
 
+# Timed runs: use external cron → GitHub API workflow_dispatch (see docs/EXTERNAL_CRON_SETUP.md).
+# GitHub's built-in `schedule` is disabled here to avoid late/duplicate runs.
+
 on:
-  schedule:
-    - cron: "0 */2 * * *"   # every 2 hours at :00 UTC (00:00, 02:00, 04:00, …)
   workflow_dispatch:
+  # schedule:  # disabled — external cron triggers on time (cron-job.org)
+  #   - cron: "0 */2 * * *"
 
 concurrency:
   group: feature-pipeline

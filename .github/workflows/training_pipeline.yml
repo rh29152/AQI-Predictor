@@ -1,14 +1,13 @@
-name: Training Pipeline (Every 5 Hours — test)
+name: Training Pipeline (Daily)
 
-# TEMP: every 5 h for scheduled-run testing. Before submission, revert to daily:
-#   - cron: "0 2 * * *"   # daily at 02:00 UTC (07:00 PKT)
+# Timed runs: external cron daily 02:00 UTC / 07:00 PKT (docs/EXTERNAL_CRON_SETUP.md).
 # Daily train.py: 12 pollutant targets × four algorithms, best model per target
 # saved locally, uploaded to Hugging Face Hub, metadata mirrored in MongoDB.
 
 on:
-  schedule:
-    - cron: "0 */5 * * *"   # every 5 h at :00 UTC (00:00, 05:00, 10:00, …)
   workflow_dispatch:
+  # schedule:  # disabled — external cron triggers on time (cron-job.org)
+  #   - cron: "0 2 * * *"   # daily 02:00 UTC = 07:00 PKT
 
 concurrency:
   group: training-pipeline
