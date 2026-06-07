@@ -146,10 +146,11 @@ Winning models are serialised locally, uploaded to Hugging Face when credentials
 
 | Workflow | Schedule | Responsibility |
 |---|---|---|
+| CI | Push / PR to `main` or `master` | Compile, import smoke test, CLI check |
 | Feature pipeline | Every hour (`:00` UTC) | Catch-up (≤48 h), live OpenWeather fetch, single-row feature upsert |
 | Training pipeline | Daily 02:00 UTC | Full retrain of 12 targets, HF upload, 30-day Actions artefact backup |
 
-Both workflows support manual dispatch from the GitHub Actions UI.
+Pipeline workflows install `requirements-ci.txt` (lighter than the full `requirements.txt` used locally). All three support manual dispatch from the GitHub Actions UI. Missing required secrets fail fast with annotated errors in the log.
 
 ---
 
@@ -157,15 +158,15 @@ Both workflows support manual dispatch from the GitHub Actions UI.
 
 Runtime settings load from environment variables. Local development typically uses a `.env` file; CI injects the same keys as repository secrets.
 
-| Variable | Purpose |
-|---|---|
-| `OPENWEATHER_API_KEY` | OpenWeather API access (required) |
-| `MONGODB_URI` | MongoDB Atlas connection string (required) |
-| `DB_NAME` | Database name (default: `aqi_predictor`) |
-| `HF_TOKEN` | Hugging Face write token (optional; enables Hub upload) |
-| `HF_REPO_ID` | Hugging Face model repo id (optional; pairs with `HF_TOKEN`) |
+| Variable | Purpose | Required in CI |
+|---|---|---|
+| `OPENWEATHER_API_KEY` | OpenWeather API access | Feature + training workflows |
+| `MONGODB_URI` | MongoDB Atlas connection string | Feature + training workflows |
+| `DB_NAME` | Database name (defaults to `aqi_predictor` when unset) | Optional |
+| `HF_TOKEN` | Hugging Face write token | Training workflow |
+| `HF_REPO_ID` | Hugging Face model repo id | Training workflow |
 
-Without Hugging Face credentials, models persist locally and metadata still registers in MongoDB; Hub download on fresh runners requires prior upload or a local cache.
+See `.env.example` for local setup. In GitHub: **Settings → Secrets and variables → Actions**.
 
 ---
 

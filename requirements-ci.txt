@@ -1,0 +1,11 @@
+# Minimal dependencies for GitHub Actions (feature + training pipelines).
+# Full local/dashboard stack: requirements.txt
+pandas
+numpy
+requests
+pymongo[srv]
+python-dotenv
+scikit-learn
+xgboost
+joblib
+huggingface_hub

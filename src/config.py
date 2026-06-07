@@ -25,7 +25,7 @@ if not MONGODB_URI:
         "Add it to your .env file or GitHub Actions secrets."
     )
 
-DB_NAME: str = os.getenv("DB_NAME", "aqi_predictor")
+DB_NAME: str = os.getenv("DB_NAME") or "aqi_predictor"
 
 # ── Hugging Face Hub ───────────────────────────────────────────────────────────
 HF_TOKEN:   str | None = os.getenv("HF_TOKEN")

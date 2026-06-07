@@ -1,0 +1,62 @@
+name: CI
+
+# Smoke checks on push/PR — compile, import, and CLI parsing without live APIs.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Compile and import
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      OPENWEATHER_API_KEY: ci-dummy-key
+      MONGODB_URI: mongodb://localhost:27017
+      DB_NAME: aqi_predictor_ci
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install pipeline dependencies
+        run: pip install -r requirements-ci.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q src app scripts
+
+      - name: Import core modules
+        run: |
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path(".").resolve()))
+          for mod in (
+              "src.config", "src.database", "src.feature_engineering",
+              "src.hourly_pipeline", "src.train", "src.predict",
+              "src.model_registry", "src.hf_model_registry", "src.aqi_utils",
+          ):
+              __import__(mod)
+          print("All core imports OK")
+          PY
+
+      - name: Verify CLI entry points
+        run: |
+          python src/hourly_pipeline.py --help
+          python src/backfill.py --help

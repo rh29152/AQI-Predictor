@@ -6,16 +6,24 @@ name: Feature Pipeline (Hourly)
 
 on:
   schedule:
-    - cron: "0 * * * *"   # every hour at :00
-  workflow_dispatch:        # GitHub UI manual trigger
+    - cron: "0 * * * *"   # every hour at :00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: feature-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   hourly-feature-pipeline:
-    name: "Fetch → Store Raw → Engineer 1 Feature Row → Store"
+    name: "Fetch → Store Raw → Engineer Features → Store"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
 
     env:
+      PYTHONUNBUFFERED: "1"
       OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
       DB_NAME: ${{ secrets.DB_NAME }}
@@ -24,14 +32,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate required secrets
+        run: |
+          missing=0
+          if [ -z "$OPENWEATHER_API_KEY" ]; then echo "::error::OPENWEATHER_API_KEY secret is not set"; missing=1; fi
+          if [ -z "$MONGODB_URI" ]; then echo "::error::MONGODB_URI secret is not set"; missing=1; fi
+          exit $missing
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
+          cache-dependency-path: requirements-ci.txt
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install pipeline dependencies
+        run: pip install -r requirements-ci.txt
 
       - name: Run incremental hourly pipeline
         run: python src/hourly_pipeline.py --catchup-hours 48
