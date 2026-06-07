@@ -148,7 +148,7 @@ Winning models are serialised locally, uploaded to Hugging Face when credentials
 |---|---|---|
 | CI | Push / PR to `main` or `master` | Compile, import smoke test, CLI check |
 | Feature pipeline | Every 2 hours (`:00` UTC — 00:00, 02:00, 04:00, …) | Catch-up (≤48 h), live OpenWeather fetch, single-row feature upsert |
-| Training pipeline | Daily 02:00 UTC | Full retrain of 12 targets, HF upload, 30-day Actions artefact backup |
+| Training pipeline | Every 5 h (`:00` UTC — **test schedule**; revert to daily `0 2 * * *` before submission) | Full retrain of 12 targets, HF upload, 30-day Actions artefact backup |
 
 Pipeline workflows install `requirements-ci.txt` (lighter than the full `requirements.txt` used locally). All three support manual dispatch from the GitHub Actions UI. Missing required secrets fail fast with annotated errors in the log.
 
