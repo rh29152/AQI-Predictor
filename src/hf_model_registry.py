@@ -234,7 +234,7 @@ def download_model_from_hf(
         local_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(cached_path, local_dest)
         logger.info(
-            "Downloaded model from HF Hub: %s/%s → %s", repo_id, filename, local_dest
+            "Downloaded model from HF Hub: %s/%s -> %s", repo_id, filename, local_dest
         )
         return local_dest
 
