@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -43,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.database import (
     get_collection,
     get_raw_history,
+    get_raw_history_up_to,
     insert_features,
     insert_features_batch,
     ensure_indexes,
@@ -259,6 +261,61 @@ def build_features_incremental(context_df: pd.DataFrame) -> dict:
     return latest
 
 
+def _floor_to_hour(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.replace(minute=0, second=0, microsecond=0)
+
+
+def _build_incremental_from_context(context_df: pd.DataFrame) -> dict:
+    """Shared helper: build and upsert one incremental feature row."""
+    feature_row = build_features_incremental(context_df)
+    insert_features(feature_row)
+    return feature_row
+
+
+def run_incremental_for_datetime(target_dt: datetime) -> dict | None:
+    """
+    Compute and upsert features for a specific hourly timestamp.
+
+    Reads raw history up to target_dt for lag context.  Used by catch-up
+    mode to process missing hours in chronological order.
+    """
+    if target_dt.tzinfo is None:
+        target_dt = target_dt.replace(tzinfo=timezone.utc)
+    target_hour = _floor_to_hour(target_dt)
+
+    context = get_raw_history_up_to(target_hour, n=LAG_CONTEXT_ROWS)
+    if len(context) < 2:
+        logger.warning(
+            "Catch-up: insufficient raw context for %s — skipping feature row.",
+            target_hour,
+        )
+        return None
+
+    context_df = pd.DataFrame(context)
+    context_df["datetime"] = pd.to_datetime(context_df["datetime"], utc=True)
+    context_df.sort_values("datetime", inplace=True)
+    context_df.reset_index(drop=True, inplace=True)
+
+    last_dt = context_df.iloc[-1]["datetime"]
+    if _floor_to_hour(last_dt.to_pydatetime()) != target_hour:
+        logger.warning(
+            "Catch-up: no raw row at %s (latest raw in context=%s) — skipping.",
+            target_hour,
+            last_dt,
+        )
+        return None
+
+    feature_row = _build_incremental_from_context(context_df)
+    logger.info(
+        "Catch-up: upserted feature row — datetime=%s  PM2.5=%.1f",
+        feature_row.get("datetime"),
+        feature_row.get("pm2_5", float("nan")),
+    )
+    return feature_row
+
+
 def run_incremental_pipeline() -> dict:
     """
     INCREMENTAL entry point — called by hourly_pipeline.py.
@@ -284,8 +341,7 @@ def run_incremental_pipeline() -> dict:
     context_df.sort_values("datetime", inplace=True)
     context_df.reset_index(drop=True, inplace=True)
 
-    feature_row = build_features_incremental(context_df)
-    insert_features(feature_row)
+    feature_row = _build_incremental_from_context(context_df)
 
     logger.info(
         "Incremental: upserted 1 feature row — datetime=%s  PM2.5=%.1f",

@@ -1,7 +1,8 @@
 name: Feature Pipeline (Hourly)
 
 # ── What this workflow does ────────────────────────────────────────────────────
-# Runs every hour and executes ONE incremental step only:
+# Runs every hour and executes ONE incremental step with optional catch-up:
+#   0. (default) Fill up to 48 missing hourly slots since last feature row.
 #   1. Fetch the latest Karachi AQI + weather from OpenWeather API.
 #   2. Store the raw record in MongoDB (raw_data collection) — upsert.
 #   3. Compute features for that single new record using the last ~73 raw rows
@@ -42,7 +43,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run incremental hourly pipeline
-        run: python src/hourly_pipeline.py
+        run: python src/hourly_pipeline.py --catchup-hours 48
 
       - name: Log completion
         run: echo "Hourly pipeline complete at $(date -u)"

@@ -169,6 +169,24 @@ def get_raw_history(n: int = 73) -> list[dict[str, Any]]:
     return list(reversed(docs))  # oldest first
 
 
+def get_raw_history_up_to(end_dt: datetime, n: int = 73) -> list[dict[str, Any]]:
+    """
+    Return up to *n* raw records with datetime <= end_dt, sorted ascending.
+
+    Used by catch-up feature engineering to build lag context ending at a
+    specific hourly timestamp.
+    """
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=timezone.utc)
+    col = get_collection(RAW_COLLECTION)
+    docs = list(
+        col.find({"datetime": {"$lte": end_dt}}, {"_id": 0})
+        .sort("datetime", -1)
+        .limit(n)
+    )
+    return list(reversed(docs))
+
+
 def get_latest_features(n: int = 48) -> list[dict[str, Any]]:
     """
     Return the *n* most recent feature rows (sorted ascending by datetime).
@@ -181,6 +199,18 @@ def get_latest_features(n: int = 48) -> list[dict[str, Any]]:
         .limit(n)
     )
     return list(reversed(docs))
+
+
+def get_latest_feature_datetime() -> datetime | None:
+    """Return the datetime of the most recent row in the features collection."""
+    col = get_collection(FEATURES_COLLECTION)
+    doc = col.find_one({}, {"datetime": 1}, sort=[("datetime", -1)])
+    if not doc:
+        return None
+    dt = doc["datetime"]
+    if isinstance(dt, datetime) and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def get_all_features() -> list[dict[str, Any]]:
