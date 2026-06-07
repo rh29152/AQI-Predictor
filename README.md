@@ -2,10 +2,11 @@
 
 Automated **pollutant forecasting + AQI calculation** for Karachi, Pakistan. The system ingests hourly pollution and weather data, engineers temporal features in MongoDB Atlas, trains **12 pollutant forecasting models** (4 pollutants × 3 horizons), and serves EPA-style 3-day AQI forecasts through a public Streamlit dashboard.
 
-> **Detailed project report:** The full submission report (architecture, EDA figures, model evaluation, automation, challenges) is available at the **repository root** as `[final_report.pdf](final_report.pdf)`.
+> **Detailed project report:** The full internship submission (architecture diagrams, EDA figures, model evaluation, automation, challenges) is at the repository root: **[final_report.pdf](final_report.pdf)**
 
+**Detailed report:** [final_report.pdf](final_report.pdf)  
 **Live dashboard:** [aqipredictorbyrashidhussain.streamlit.app](https://aqipredictorbyrashidhussain.streamlit.app/)  
-**EDA notebook:** `[notebooks/01_eda.ipynb](notebooks/01_eda.ipynb)` 
+**EDA notebook:** [notebooks/01_eda.ipynb](notebooks/01_eda.ipynb) · **Cron setup:** [docs/EXTERNAL_CRON_SETUP.md](docs/EXTERNAL_CRON_SETUP.md)
 
 ---
 
@@ -320,7 +321,7 @@ The dashboard computes SHAP values for the active `target_pm2_5_24h` model using
 ├── models/                  # Local cache (gitignored)
 ├── requirements.txt         # Full local stack
 ├── requirements-ci.txt      # GitHub Actions deps
-└── FINAL_REPORT.md          # Submission report with figures
+└── final_report.pdf         # Full project report (PDF)
 ```
 
 ---
@@ -377,8 +378,7 @@ Local: `.env` (see `.env.example`). GitHub: **Settings → Secrets and variables
 | Windows paths break on Streamlit Cloud | HF download + filename-based local cache                         |
 | GitHub schedule delays                 | cron-job.org external scheduler                                  |
 
-
-See `[final_report.pdf](final_report.pdf)`  for the full list.
+See [final_report.pdf](final_report.pdf) for the full challenges list and detailed write-up.
 
 ---
 
