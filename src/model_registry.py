@@ -25,6 +25,22 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _resolve_model_cache_path(meta: dict[str, Any], target: str | None) -> Path:
+    """
+    Writable local .pkl path on this runner.
+
+    MongoDB often stores a dev-machine absolute path (e.g. Windows). On Linux
+    hosts such as Streamlit Cloud, only the filename is reused under models/.
+    """
+    stored = (meta.get("local_model_path") or "").strip()
+    if stored:
+        cached = MODELS_DIR / Path(stored.replace("\\", "/")).name
+        if cached.exists():
+            return cached
+    label = target or meta.get("target") or "model"
+    return MODELS_DIR / f"cached_{label}.pkl"
+
+
 # ── Save ───────────────────────────────────────────────────────────────────────
 
 def save_model(
@@ -118,7 +134,7 @@ def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
         meta.get("active", "unknown"),
     )
 
-    local_path = Path(meta.get("local_model_path", ""))
+    local_path = _resolve_model_cache_path(meta, target)
 
     # Local cache hit
     if local_path.exists():
@@ -126,9 +142,10 @@ def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
         logger.info("  -> Loaded from local cache: %s", local_path.name)
         return model, meta
 
-    # Hub fetch when local artefact is missing (typical on fresh CI runners)
+    # Hub fetch when local artefact is missing (typical on Streamlit Cloud / CI)
     hf_model_path = meta.get("hf_model_path")
-    hf_repo_id    = meta.get("hf_repo_id")
+    from src.config import HF_REPO_ID  # noqa: PLC0415
+    hf_repo_id = meta.get("hf_repo_id") or HF_REPO_ID
 
     if not hf_model_path or not hf_repo_id:
         raise FileNotFoundError(

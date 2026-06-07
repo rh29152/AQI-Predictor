@@ -517,6 +517,19 @@ if "error" in forecasts:
         alert_html("hazardous", f"Forecast pipeline error: {forecasts['error']}"),
         unsafe_allow_html=True,
     )
+elif forecasts and all(
+    isinstance(v, dict) and v.get("predicted_aqi") is None
+    for v in forecasts.values()
+):
+    st.markdown(
+        alert_html(
+            "moderate",
+            "Forecasts unavailable — models could not be loaded from Hugging Face. "
+            "Confirm HF_TOKEN and HF_REPO_ID in Streamlit secrets (Manage app → Settings → Secrets), "
+            "then reboot the app.",
+        ),
+        unsafe_allow_html=True,
+    )
 else:
     alert_shown = False
     for hz, info in forecasts.items():
