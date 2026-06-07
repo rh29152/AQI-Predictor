@@ -6,7 +6,7 @@ Automated **pollutant forecasting + AQI calculation** for Karachi, Pakistan. The
 
 **Detailed report:** [final_report.pdf](final_report.pdf)  
 **Live dashboard:** [aqipredictorbyrashidhussain.streamlit.app](https://aqipredictorbyrashidhussain.streamlit.app/)  
-**EDA notebook:** [notebooks/01_eda.ipynb](notebooks/01_eda.ipynb) · **Cron setup:** [docs/EXTERNAL_CRON_SETUP.md](docs/EXTERNAL_CRON_SETUP.md)
+**EDA notebook:** [notebooks/01_eda.ipynb](notebooks/01_eda.ipynb)
 
 ---
 
