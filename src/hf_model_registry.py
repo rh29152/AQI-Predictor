@@ -111,7 +111,7 @@ def upload_model_to_hf(
     timestamp : str
         Run timestamp, e.g. '20260606_120000'.
     metrics : dict
-        {'mae': float, 'rmse': float, 'r2': float}
+        Train/test metrics and overfitting diagnostics.
     feature_columns : list[str]
         Ordered feature column names the model was trained on.
     model_name : str

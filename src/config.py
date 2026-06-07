@@ -9,7 +9,6 @@ Reads all settings from environment variables.
 import os
 from dotenv import load_dotenv
 
-# Load .env when running locally; no-op in CI/CD where vars are injected
 load_dotenv()
 
 # ── OpenWeather ────────────────────────────────────────────────────────────────
@@ -34,7 +33,6 @@ DB_NAME: str = os.getenv("DB_NAME", "aqi_predictor")
 HF_TOKEN:   str | None = os.getenv("HF_TOKEN")
 HF_REPO_ID: str | None = os.getenv("HF_REPO_ID")
 
-# Gate flag:  all HF Hub calls are skipped when either variable is absent.
 HF_ENABLED: bool = bool(HF_TOKEN and HF_REPO_ID)
 
 if not HF_ENABLED:
@@ -50,35 +48,56 @@ KARACHI_LON: float = 67.0011
 CITY_NAME: str = "Karachi"
 
 # ── MongoDB collection names ───────────────────────────────────────────────────
-# raw_data        : one hourly record from OpenWeather API (pollution + weather)
-# features        : ML-ready rows; backfill rows have target columns,
-#                   hourly pipeline rows do NOT (future data unavailable)
-# model_registry  : metadata mirror of every HF Hub model upload
-#                   (hf_repo_id, hf_model_path, metrics, feature_columns …)
-# predictions     : saved forecast outputs from predict.py (optional)
-RAW_COLLECTION: str = "raw_data"
-FEATURES_COLLECTION: str = "features"
-MODELS_COLLECTION: str = "model_registry"
+RAW_COLLECTION:         str = "raw_data"
+FEATURES_COLLECTION:    str = "features"
+MODELS_COLLECTION:      str = "model_registry"
 PREDICTIONS_COLLECTION: str = "predictions"
 
-# ── Feature columns used during training ──────────────────────────────────────
-FEATURE_COLUMNS: list[str] = [
-    "hour", "day", "month", "weekday", "is_weekend",
-    "aqi_lag_1", "aqi_lag_24", "aqi_lag_48",
-    "pm25_lag_24", "pm10_lag_24",
-    "aqi_rolling_24_mean", "pm25_rolling_24_mean",
-    "aqi_change_rate",
-    "temperature", "humidity", "pressure", "wind_speed", "clouds",
-    "co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3",
-]
+# ── Pollutant-first AQI forecasting ───────────────────────────────────────────
+# We forecast these 4 pollutant concentrations (μg/m³) at 3 horizons.
+# Final AQI is derived via EPA-style breakpoint interpolation in aqi_utils.py.
+POLLUTANTS_TO_FORECAST: list[str] = ["pm2_5", "pm10", "o3", "no2"]
+FORECAST_HORIZONS: list[int] = [24, 48, 72]
 
+# 12 target columns generated automatically (4 pollutants × 3 horizons)
 TARGET_COLUMNS: list[str] = [
-    "target_aqi_24h",
-    "target_aqi_48h",
-    "target_aqi_72h",
+    f"target_{pollutant}_{horizon}h"
+    for pollutant in POLLUTANTS_TO_FORECAST
+    for horizon in FORECAST_HORIZONS
 ]
 
-# ── AQI category mapping (OpenWeather 1-5 scale) ──────────────────────────────
+# ── Feature columns (model input) ─────────────────────────────────────────────
+# These are the features every trained model expects in this exact order.
+# Do NOT include target columns here.
+FEATURE_COLUMNS: list[str] = [
+    # Raw pollutant concentrations (μg/m³)
+    "pm2_5", "pm10", "o3", "no2", "co", "so2", "nh3",
+    # Meteorology
+    "temperature", "humidity", "pressure", "wind_speed", "clouds",
+    # Calendar / time-of-day
+    "hour", "day", "month", "weekday", "is_weekend",
+    # OpenWeather AQI category (1-5) kept as an input signal, not as target
+    "aqi_category",
+    # PM2.5 lag & rolling features
+    "pm2_5_lag_1", "pm2_5_lag_24", "pm2_5_lag_48",
+    "pm2_5_rolling_6_mean", "pm2_5_rolling_12_mean", "pm2_5_rolling_24_mean",
+    "pm2_5_change_rate",
+    # PM10 lag & rolling features
+    "pm10_lag_1", "pm10_lag_24", "pm10_lag_48",
+    "pm10_rolling_6_mean", "pm10_rolling_12_mean", "pm10_rolling_24_mean",
+    "pm10_change_rate",
+    # O3 lag & rolling features
+    "o3_lag_1", "o3_lag_24", "o3_lag_48",
+    "o3_rolling_6_mean", "o3_rolling_12_mean", "o3_rolling_24_mean",
+    "o3_change_rate",
+    # NO2 lag & rolling features
+    "no2_lag_1", "no2_lag_24", "no2_lag_48",
+    "no2_rolling_6_mean", "no2_rolling_12_mean", "no2_rolling_24_mean",
+    "no2_change_rate",
+]
+
+# ── AQI category mapping (OpenWeather 1-5 scale — for raw_data display only) ──
+# Do NOT use this as the final AQI. Use aqi_utils.py for EPA 0-500 AQI.
 AQI_CATEGORIES: dict[int, str] = {
     1: "Good",
     2: "Fair",

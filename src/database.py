@@ -58,14 +58,16 @@ def ensure_indexes() -> None:
     feats = get_collection(FEATURES_COLLECTION)
     feats.create_index([("datetime", ASCENDING)], unique=True)
 
-    # model_registry: sort by trained_at to find the latest model quickly
+    # model_registry: fast lookup by (target, active) + recency sort
     models = get_collection(MODELS_COLLECTION)
     models.create_index([("trained_at", ASCENDING)])
     models.create_index([("target", ASCENDING), ("trained_at", ASCENDING)])
+    models.create_index([("target", ASCENDING), ("active", ASCENDING), ("trained_at", ASCENDING)])
 
-    # predictions: sort by predicted_at for latest forecast lookup
+    # predictions: lookup by horizon and time
     preds = get_collection(PREDICTIONS_COLLECTION)
     preds.create_index([("predicted_at", ASCENDING)])
+    preds.create_index([("horizon_hours", ASCENDING), ("predicted_at", ASCENDING)])
 
     logger.info("MongoDB indexes ensured.")
 
@@ -123,23 +125,25 @@ def insert_features_batch(records: list[dict[str, Any]]) -> int:
 
 def get_training_data(limit: int = 0) -> list[dict[str, Any]]:
     """
-    Retrieve feature documents that have ALL three target columns populated.
+    Retrieve feature documents that have ALL 12 pollutant target columns
+    populated (4 pollutants × 3 horizons = 12 targets).
 
     Rows inserted by the incremental (hourly) pipeline do NOT have target
-    columns because future data is unknown — they are excluded here so the
-    training pipeline never trains on incomplete labels.
+    columns because future concentrations are unknown — they are excluded here
+    so the training pipeline never trains on incomplete labels.
 
     Parameters
     ----------
     limit : int
         Max number of documents to return (0 = no limit).
     """
+    from src.config import POLLUTANTS_TO_FORECAST, FORECAST_HORIZONS  # noqa: PLC0415
     col = get_collection(FEATURES_COLLECTION)
-    query = {
-        "target_aqi_24h": {"$exists": True, "$ne": None},
-        "target_aqi_48h": {"$exists": True, "$ne": None},
-        "target_aqi_72h": {"$exists": True, "$ne": None},
-    }
+    query: dict[str, Any] = {}
+    for poll in POLLUTANTS_TO_FORECAST:
+        for h in FORECAST_HORIZONS:
+            key = f"target_{poll}_{h}h"
+            query[key] = {"$exists": True, "$ne": None}
     cursor = col.find(query, {"_id": 0}).sort("datetime", ASCENDING)
     if limit:
         cursor = cursor.limit(limit)
@@ -179,20 +183,57 @@ def get_latest_features(n: int = 48) -> list[dict[str, Any]]:
     return list(reversed(docs))
 
 
+def get_all_features() -> list[dict[str, Any]]:
+    """
+    Return ALL feature rows sorted ascending by datetime.
+
+    Unlike get_training_data(), this does NOT filter by target column
+    presence.  The training pipeline uses this so each call to
+    train_for_target() can drop only the rows missing *that specific*
+    target column, maximising the training set for each of the 12 targets.
+    Hourly incremental rows (no targets at all) are naturally excluded
+    per-target by the .dropna() in train_for_target().
+    """
+    col = get_collection(FEATURES_COLLECTION)
+    return list(col.find({}, {"_id": 0}).sort("datetime", ASCENDING))
+
+
 # ── Model registry ─────────────────────────────────────────────────────────────
 
 def save_model_metadata(metadata: dict[str, Any]) -> None:
     """
     Persist model training metadata to MongoDB.
 
+    Before inserting the new document, all existing records for the same
+    target are marked active=False so that load_model() always resolves to
+    exactly one active model per target.  The new document is inserted with
+    active=True.
+
     Expected keys: model_name, model_path, target, metrics,
                    trained_at, feature_columns.
     """
     col = get_collection(MODELS_COLLECTION)
     metadata.setdefault("saved_at", datetime.now(timezone.utc))
+
+    target = metadata.get("target")
+    if target:
+        # Deactivate all previous models for this exact target
+        result = col.update_many(
+            {"target": target, "active": {"$ne": False}},
+            {"$set": {"active": False}},
+        )
+        if result.modified_count:
+            logger.info(
+                "Deactivated %d older model(s) for target='%s'.",
+                result.modified_count, target,
+            )
+
+    # Mark the incoming document as the active model
+    metadata["active"] = True
+
     try:
         col.insert_one(metadata)
-        logger.info("Model metadata saved: %s", metadata.get("model_name"))
+        logger.info("Model metadata saved: %s (active=True)", metadata.get("model_name"))
     except OperationFailure as exc:
         logger.error("Failed to save model metadata: %s", exc)
         raise
@@ -222,16 +263,29 @@ def save_prediction(prediction: dict[str, Any]) -> None:
 
 def get_latest_model_metadata(target: str | None = None) -> dict[str, Any] | None:
     """
-    Return metadata for the most recently trained model.
+    Return metadata for the active model for a given target.
+
+    Resolution order:
+      1. Exact target name match (e.g. 'target_pm2_5_24h').
+      2. active=True preferred; falls back to any doc if no active record
+         exists (e.g. legacy models trained before the active flag was added).
+      3. Sorted by trained_at descending to always return the newest.
 
     Parameters
     ----------
     target : str or None
-        If provided, filter by target column (e.g. 'target_aqi_24h').
+        If provided, filter by exact target column name.
+        None → the most recently trained active model across all targets.
     """
     col = get_collection(MODELS_COLLECTION)
-    query: dict[str, Any] = {}
+
+    base_query: dict[str, Any] = {}
     if target:
-        query["target"] = target
-    doc = col.find_one(query, {"_id": 0}, sort=[("trained_at", -1)])
+        base_query["target"] = target
+
+    # Prefer active=True; fall back to any record for backward compat
+    active_query = {**base_query, "active": True}
+    doc = col.find_one(active_query, {"_id": 0}, sort=[("trained_at", -1)])
+    if doc is None:
+        doc = col.find_one(base_query, {"_id": 0}, sort=[("trained_at", -1)])
     return doc

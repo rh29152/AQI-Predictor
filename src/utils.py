@@ -31,21 +31,32 @@ def ts_to_utc(timestamp: int) -> datetime:
 
 def aqi_label(aqi: int | float) -> str:
     """
+    Return a human-readable label for an EPA AQI value (0-500 scale).
+    Delegates to aqi_utils.aqi_label for the 0-500 EPA scale.
+    """
+    from src.aqi_utils import aqi_label as _epa_label  # noqa: PLC0415
+    return _epa_label(aqi)
+
+
+def aqi_color(aqi: int | float) -> str:
+    """Return a hex color for an EPA AQI value (0-500 scale)."""
+    from src.aqi_utils import aqi_color as _epa_color  # noqa: PLC0415
+    return _epa_color(aqi)
+
+
+def openweather_aqi_label(aqi: int | float) -> str:
+    """
     Map OpenWeather AQI integer (1-5) to a human-readable label.
 
-    OpenWeather uses a 1-5 scale:
-      1 → Good
-      2 → Fair
-      3 → Moderate
-      4 → Poor
-      5 → Very Poor
+    Kept for displaying raw_data 'aqi_category' field in the EDA notebook
+    and historical trend charts.  Do NOT use for forecast output.
     """
     mapping = {1: "Good", 2: "Fair", 3: "Moderate", 4: "Poor", 5: "Very Poor"}
     return mapping.get(int(round(aqi)), "Unknown")
 
 
-def aqi_color(aqi: int | float) -> str:
-    """Return a hex color for a given AQI (1-5 scale)."""
+def openweather_aqi_color(aqi: int | float) -> str:
+    """Return a hex color for OpenWeather AQI (1-5 scale)."""
     colors = {1: "#00e400", 2: "#ffff00", 3: "#ff7e00", 4: "#ff0000", 5: "#8f3f97"}
     return colors.get(int(round(aqi)), "#999999")
 

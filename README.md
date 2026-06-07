@@ -1,8 +1,17 @@
 # 🌫️ Karachi AQI Predictor
 
 A **fully automated, cloud-ready Air Quality Index (AQI) forecasting system** for Karachi, Pakistan.
-Predicts AQI for the **next 24 h, 48 h, and 72 h** using an end-to-end ML pipeline with hourly
-automated data collection and daily model retraining — all driven by **GitHub Actions**.
+
+This project follows a **pollutant-first AQI forecasting approach**. Instead of predicting
+OpenWeather's 1–5 AQI category directly, the system predicts future **pollutant concentrations**
+(PM2.5, PM10, O3, NO2) at 24 h, 48 h, and 72 h horizons. Each predicted pollutant is converted
+to an AQI sub-index using EPA breakpoint interpolation, and the **final AQI is selected as the
+maximum sub-index**, representing the dominant pollutant.
+
+> ⚠️ **Educational approximation notice**: Official AQI calculations depend on pollutant-specific
+> averaging windows (24-hour PM averages, 8-hour ozone averages). This project uses hourly
+> forecasted concentrations as approximations of these windows. Results are for educational
+> forecasting purposes and are not regulatory-grade.
 
 ---
 
@@ -13,28 +22,30 @@ OpenWeather API (Air Pollution + Weather)
         │
         ▼  (every hour via GitHub Actions)
   Feature Pipeline
-  ├── fetch_openweather.py   — fetch & store raw data
-  └── feature_engineering.py — compute lag/rolling/time features
+  ├── fetch_openweather.py    — fetch & store raw data
+  └── feature_engineering.py — lag/rolling/time features for PM2.5, PM10, O3, NO2
         │
         ▼
   MongoDB Atlas (Feature Store)
   ├── raw_data collection    — raw API records
-  ├── features collection    — engineered ML features
-  └── model_registry collection — model metadata
+  ├── features collection    — engineered ML features + 12 pollutant target columns
+  └── model_registry         — model metadata mirror (HF Hub paths, metrics)
         │
         ▼  (every day via GitHub Actions)
   Training Pipeline (train.py)
-  ├── LinearRegression
-  ├── RandomForestRegressor
-  ├── GradientBoostingRegressor
-  └── XGBRegressor
+  ├── 12 targets: 4 pollutants × 3 horizons (24h/48h/72h)
+  ├── 4 algorithms per target: Ridge · RandomForest · GradientBoosting · XGBoost
+  └── Overfitting detection (overfit_ratio AND r2_gap thresholds)
         │
         ▼
-  Best Model saved as  models/best_model_<target>_<timestamp>.pkl
+  Hugging Face Hub — model registry
+  └── models/target_pm2_5_24h/<timestamp>/model.pkl  (× 12)
         │
         ▼
   Prediction Pipeline (predict.py)
-  → 24h / 48h / 72h AQI forecasts
+  ├── Load each model → predict pollutant concentrations
+  ├── aqi_utils.calculate_final_aqi() → EPA sub-index → final AQI
+  └── Save to MongoDB predictions collection
         │
         ▼
   Streamlit Dashboard (app/streamlit_app.py)

@@ -16,7 +16,10 @@ Save workflow
          hf_metadata_path: str,
          model_name      : str,
          target          : str,
-         metrics         : {mae, rmse, r2},
+         metrics         : {train_mae, train_rmse, train_r2,
+                            test_mae, test_rmse, test_r2,
+                            overfit_gap, overfit_ratio, is_overfitting,
+                            mae, rmse, r2},
          feature_columns : [str, ...],
          trained_at      : datetime,
          local_model_path: str,   # local cache (may be absent on new runners)
@@ -62,6 +65,7 @@ def save_model(
     target: str,
     metrics: dict[str, float],
     feature_columns: list[str],
+    extra_meta: dict[str, Any] | None = None,
 ) -> Path:
     """
     Persist a trained model locally and register it on HF Hub.
@@ -73,9 +77,13 @@ def save_model(
     model_name : str
         Algorithm class name, e.g. 'RandomForestRegressor'.
     target : str
-        Forecast horizon key, e.g. 'target_aqi_24h'.
+        Exact target column name, e.g. 'target_pm2_5_24h'.
+        All previous MongoDB records for this target are marked active=False
+        before the new record is inserted as active=True.
     metrics : dict
-        {'mae': float, 'rmse': float, 'r2': float}
+        Train/test metrics and overfitting diagnostics, e.g.
+        train_mae, train_rmse, train_r2, test_mae, test_rmse, test_r2,
+        overfit_gap, overfit_ratio, is_overfitting.
     feature_columns : list[str]
         Ordered feature column names the model was trained on.
 
@@ -118,6 +126,8 @@ def save_model(
         "trained_at":        trained_at,
         "local_model_path":  str(local_path),
     }
+    if extra_meta:
+        metadata.update(extra_meta)
     save_model_metadata(metadata)
 
     logger.info(
@@ -132,20 +142,25 @@ def save_model(
 
 def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
     """
-    Load the most recently registered model for a given forecast horizon.
+    Load the active model for an exact target name.
 
     Resolution order
     ----------------
-    1. Read the latest metadata document from MongoDB.
-    2. Fast path  — local .pkl still on disk → load directly.
-    3. Slow path  — download from HF Hub using metadata.hf_model_path,
-                    save to the original local_model_path, then load.
+    1. Query MongoDB for the active=True document with the exact target name,
+       sorted by trained_at descending.  Falls back to any matching document
+       if no active record exists (legacy compatibility).
+    2. Fast path  — local_model_path still on disk → load directly.
+    3. Slow path  — download model.pkl from HF Hub using the path stored in
+                    metadata, cache locally, then load.
+
+    Prediction code MUST pass the exact target name (e.g. 'target_pm2_5_24h').
+    This prevents accidentally loading old target_aqi_* models.
 
     Parameters
     ----------
     target : str or None
-        Forecast horizon, e.g. 'target_aqi_24h'.
-        None → most recently trained model across all targets.
+        Exact target column name, e.g. 'target_pm2_5_24h'.
+        None → most recently trained active model across all targets.
 
     Returns
     -------
@@ -160,15 +175,27 @@ def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
             "Run train.py first."
         )
 
+    # ── Verification log ────────────────────────────────────────────────────────
+    trained_at_str = (
+        meta["trained_at"].isoformat()
+        if hasattr(meta.get("trained_at"), "isoformat")
+        else str(meta.get("trained_at", "unknown"))
+    )
+    logger.info(
+        "Loading model | target=%-25s | algorithm=%-28s | trained_at=%s | hf_path=%s | active=%s",
+        meta.get("target", "?"),
+        meta.get("model_name", "?"),
+        trained_at_str,
+        meta.get("hf_model_path") or "local-only",
+        meta.get("active", "unknown"),
+    )
+
     local_path = Path(meta.get("local_model_path", ""))
 
     # ── Fast path ──────────────────────────────────────────────────────────────
     if local_path.exists():
         model = joblib.load(local_path)
-        logger.info(
-            "Loaded model '%s' from local cache: %s",
-            meta["model_name"], local_path,
-        )
+        logger.info("  -> Loaded from local cache: %s", local_path.name)
         return model, meta
 
     # ── Slow path: download from HF Hub ────────────────────────────────────────
@@ -182,14 +209,11 @@ def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
             "Re-run train.py to retrain the model."
         )
 
-    logger.info(
-        "Local .pkl not found — downloading from HF Hub: %s/%s",
-        hf_repo_id, hf_model_path,
-    )
+    logger.info("  -> Local .pkl absent — downloading from HF Hub: %s/%s", hf_repo_id, hf_model_path)
     downloaded = download_model_from_hf(
         repo_id=hf_repo_id,
         filename=hf_model_path,
-        local_dest=local_path,   # cache at the same path for next time
+        local_dest=local_path,
     )
     if downloaded is None:
         raise RuntimeError(
@@ -198,10 +222,7 @@ def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
         )
 
     model = joblib.load(downloaded)
-    logger.info(
-        "Loaded model '%s' from HF Hub → cached at %s",
-        meta["model_name"], downloaded,
-    )
+    logger.info("  -> Downloaded and cached at: %s", downloaded)
     return model, meta
 
 

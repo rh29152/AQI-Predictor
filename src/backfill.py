@@ -1,25 +1,31 @@
 """
-backfill.py — One-time historical backfill for Karachi AQI + weather data.
+backfill.py — Historical backfill and feature rebuild for the AQI Predictor.
 
-Runs ONCE before anything else to pre-populate MongoDB with 90 days of
-hourly records.  After this, the hourly pipeline handles incremental updates.
+Normal run (first time setup)
+------------------------------
+    python src/backfill.py
 
-Steps performed
----------------
-1. Fetches 90 days of air pollution history from OpenWeather (free tier).
-2. Fetches matching weather data from Open-Meteo (free, no key required).
-3. Merges and store ALL records in MongoDB → raw_data collection.
-4. Runs the BATCH feature pipeline on the full history:
-   - Compute lag, rolling, and time features.
-   - Compute target labels (target_aqi_24/48/72h) using future-shifted AQI.
-   - Store all usable rows in MongoDB → features collection.
+Steps:
+  1. Fetch 90 days of air pollution history from OpenWeather API.
+  2. Fetch matching weather from Open-Meteo (free, no key required).
+  3. Merge + store all records in MongoDB → raw_data collection.
+  4. Run BATCH feature engineering:
+     - lag, rolling, time features for pm2_5, pm10, o3, no2
+     - 12 pollutant target columns (4 pollutants × 3 horizons)
+     - Store all usable rows in MongoDB → features collection.
 
-After backfill the features collection contains rows WITH target columns,
-which the daily training pipeline (train.py) uses for model fitting.
+Rebuild features only (after target column migration)
+------------------------------------------------------
+    python src/backfill.py --rebuild-features
+
+Skips the raw data fetch.  Clears the features collection and rebuilds it
+from the existing raw_data records.  Useful after changing FEATURE_COLUMNS
+or TARGET_COLUMNS without re-fetching data.
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 import time
@@ -189,23 +195,48 @@ def run_backfill(days: int = BACKFILL_DAYS) -> int:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AQI Predictor backfill / feature rebuild")
+    parser.add_argument(
+        "--rebuild-features",
+        action="store_true",
+        help=(
+            "Skip raw data fetch and only rebuild the features collection "
+            "from existing raw_data records. Use after changing feature/target "
+            "definitions without re-fetching data."
+        ),
+    )
+    args = parser.parse_args()
+
     ensure_indexes()
 
-    # ── Step 1: Fetch & store 90 days of raw data ──────────────────────────────
-    logger.info("=== STEP 1: RAW DATA BACKFILL ===")
-    total = run_backfill(days=BACKFILL_DAYS)
-    logger.info("Raw backfill complete: %d records stored in raw_data.", total)
+    if args.rebuild_features:
+        # ── Rebuild-only mode: skip raw data fetch ─────────────────────────────
+        from src.database import get_collection  # noqa: PLC0415
+        from src.config import FEATURES_COLLECTION  # noqa: PLC0415
 
-    # ── Step 2: Batch feature engineering (creates target labels) ─────────────
-    # run_feature_pipeline() is the BATCH version — it loads all raw records,
-    # builds lag/rolling/time features + target_aqi_24/48/72h columns, and
-    # stores training-ready rows in the features collection.
-    # This is NOT called by the hourly pipeline.
-    logger.info("=== STEP 2: BATCH FEATURE ENGINEERING (with target labels) ===")
-    feat_df = run_feature_pipeline()
-    logger.info(
-        "Feature engineering complete. %d training rows stored in features.",
-        len(feat_df),
-    )
+        logger.info("=== REBUILD-FEATURES MODE ===")
+        logger.info("Clearing features collection...")
+        n_deleted = get_collection(FEATURES_COLLECTION).delete_many({}).deleted_count
+        logger.info("Deleted %d old feature rows.", n_deleted)
 
-    logger.info("=== BACKFILL COMPLETE — ready for train.py ===")
+        logger.info("=== STEP: BATCH FEATURE ENGINEERING (with pollutant targets) ===")
+        feat_df = run_feature_pipeline()
+        logger.info(
+            "Feature rebuild complete. %d training rows stored in features.",
+            len(feat_df),
+        )
+        logger.info("=== REBUILD COMPLETE — ready for train.py ===")
+
+    else:
+        # ── Full backfill mode ─────────────────────────────────────────────────
+        logger.info("=== STEP 1: RAW DATA BACKFILL ===")
+        total = run_backfill(days=BACKFILL_DAYS)
+        logger.info("Raw backfill complete: %d records stored in raw_data.", total)
+
+        logger.info("=== STEP 2: BATCH FEATURE ENGINEERING (with pollutant targets) ===")
+        feat_df = run_feature_pipeline()
+        logger.info(
+            "Feature engineering complete. %d training rows stored in features.",
+            len(feat_df),
+        )
+        logger.info("=== BACKFILL COMPLETE — ready for train.py ===")
