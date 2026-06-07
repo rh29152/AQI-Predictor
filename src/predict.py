@@ -96,6 +96,7 @@ def predict_all_horizons(save_to_db: bool = False) -> dict[str, Any]:
     latest_dt = pd.to_datetime(features[-1]["datetime"], utc=True)
 
     results: dict[str, Any] = {}
+    load_errors: list[str] = []
 
     for horizon_h in FORECAST_HORIZONS:
         target_time = latest_dt + timedelta(hours=horizon_h)
@@ -116,8 +117,12 @@ def predict_all_horizons(save_to_db: bool = False) -> dict[str, Any]:
                     horizon_h, pollutant, concentration,
                 )
             except FileNotFoundError as exc:
+                msg = f"{target_key}: {exc}"
+                load_errors.append(msg)
                 logger.error("Model not found for %s: %s", target_key, exc)
             except Exception as exc:
+                msg = f"{target_key}: {exc}"
+                load_errors.append(msg)
                 logger.error("Prediction failed for %s: %s", target_key, exc)
 
         aqi_result = calculate_final_aqi(pollutant_predictions)
@@ -156,6 +161,15 @@ def predict_all_horizons(save_to_db: bool = False) -> dict[str, Any]:
                 "aqi_category": aqi_result["category"],
                 "dominant_pollutant": aqi_result["dominant_pollutant"],
             })
+
+    if load_errors:
+        import os as _os
+        results["_diagnostics"] = {
+            "load_errors": load_errors[:6],
+            "load_error_count": len(load_errors),
+            "hf_repo_id": _os.getenv("HF_REPO_ID"),
+            "hf_token_set": bool(_os.getenv("HF_TOKEN")),
+        }
 
     return results
 

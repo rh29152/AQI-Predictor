@@ -17,7 +17,11 @@ from typing import Any
 import joblib
 
 from src.database import save_model_metadata, get_latest_model_metadata
-from src.hf_model_registry import upload_model_to_hf, download_model_from_hf
+from src.hf_model_registry import (
+    upload_model_to_hf,
+    download_model_from_hf,
+    discover_latest_model_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,9 +147,19 @@ def load_model(target: str | None = None) -> tuple[Any, dict[str, Any]]:
         return model, meta
 
     # Hub fetch when local artefact is missing (typical on Streamlit Cloud / CI)
-    hf_model_path = meta.get("hf_model_path")
+    import os  # noqa: PLC0415
     from src.config import HF_REPO_ID  # noqa: PLC0415
-    hf_repo_id = meta.get("hf_repo_id") or HF_REPO_ID
+
+    hf_repo_id = meta.get("hf_repo_id") or HF_REPO_ID or os.getenv("HF_REPO_ID")
+    hf_model_path = meta.get("hf_model_path")
+    token = os.getenv("HF_TOKEN")
+
+    if not hf_model_path and hf_repo_id and target:
+        hf_model_path = discover_latest_model_path(hf_repo_id, target, token=token)
+        if hf_model_path:
+            logger.info(
+                "  -> Discovered HF path for %s: %s", target, hf_model_path
+            )
 
     if not hf_model_path or not hf_repo_id:
         raise FileNotFoundError(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -198,13 +199,11 @@ def download_model_from_hf(
     Path to the downloaded file, or None on failure.
     """
     cfg = _cfg()
-    # Public repos permit tokenless download
-    token = cfg.HF_TOKEN if cfg.HF_ENABLED else None
+    token = os.getenv("HF_TOKEN") or cfg.HF_TOKEN
 
     try:
         from huggingface_hub import hf_hub_download  # noqa: PLC0415
 
-        # hf_hub_download caches files in ~/.cache/huggingface/
         cached_path = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
@@ -222,6 +221,35 @@ def download_model_from_hf(
     except Exception as exc:
         logger.error(
             "HF download failed — repo=%s  file=%s: %s", repo_id, filename, exc
+        )
+        return None
+
+
+def discover_latest_model_path(
+    repo_id: str,
+    target: str,
+    token: str | None = None,
+) -> str | None:
+    """
+    Find the newest models/<target>/<timestamp>/model.pkl in an HF model repo.
+
+    Used when MongoDB metadata lacks hf_model_path but artefacts exist on Hub.
+    """
+    token = token or os.getenv("HF_TOKEN")
+    prefix = f"models/{target}/"
+    try:
+        from huggingface_hub import list_repo_files  # noqa: PLC0415
+
+        candidates = [
+            f for f in list_repo_files(repo_id=repo_id, token=token, repo_type="model")
+            if f.startswith(prefix) and f.endswith("/model.pkl")
+        ]
+        if not candidates:
+            return None
+        return sorted(candidates)[-1]
+    except Exception as exc:
+        logger.error(
+            "HF list failed for repo=%s target=%s: %s", repo_id, target, exc
         )
         return None
 

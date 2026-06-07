@@ -27,6 +27,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+from src.env_bootstrap import apply_streamlit_secrets
+
+apply_streamlit_secrets()
+
 from src.database import get_latest_features, ensure_indexes
 from src.predict import predict_all_horizons
 from src.aqi_utils import calculate_final_aqi, aqi_category, EPA_AQI_CATEGORIES
@@ -519,20 +523,32 @@ if "error" in forecasts:
     )
 elif forecasts and all(
     isinstance(v, dict) and v.get("predicted_aqi") is None
-    for v in forecasts.values()
+    for k, v in forecasts.items()
+    if not str(k).startswith("_")
 ):
+    diag = forecasts.get("_diagnostics", {})
+    err_snip = ""
+    if diag.get("load_errors"):
+        err_snip = f" First error: {diag['load_errors'][0]}"
+    hf_note = (
+        f" HF_REPO_ID set: {bool(diag.get('hf_repo_id'))}; "
+        f"HF_TOKEN set: {diag.get('hf_token_set', False)}."
+    )
     st.markdown(
         alert_html(
             "moderate",
-            "Forecasts unavailable — models could not be loaded from Hugging Face. "
-            "Confirm HF_TOKEN and HF_REPO_ID in Streamlit secrets (Manage app → Settings → Secrets), "
-            "then reboot the app.",
+            "Forecasts unavailable — models could not be loaded from Hugging Face."
+            + hf_note
+            + err_snip
+            + " Re-run Training Pipeline on GitHub Actions after confirming HF secrets, then reboot this app.",
         ),
         unsafe_allow_html=True,
     )
 else:
     alert_shown = False
     for hz, info in forecasts.items():
+        if str(hz).startswith("_") or not isinstance(info, dict):
+            continue
         aqi_v = info.get("predicted_aqi")
         cat_v = info.get("aqi_category", "")
         if aqi_v is None:
